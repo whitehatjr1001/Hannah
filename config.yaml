@@ -1,0 +1,32 @@
+# Hannah Smith — config.yaml
+
+agent:
+  model: ${HANNAH_MODEL:-claude-sonnet-4-6}
+  temperature: 0.2
+  max_tokens: 2048
+  stream: true
+
+simulation:
+  n_worlds: 1000
+  prediction_mode: true   # fast async, no real-time rendering
+  async: true
+  safety_car_prob: 0.18
+
+fastf1:
+  cache_dir: data/fastf1_cache
+  timeout: 30
+
+openf1:
+  base_url: https://api.openf1.org/v1
+  timeout: 10
+
+models:
+  tyre_deg: models/saved/tyre_deg_v1.pkl
+  laptime: models/saved/laptime_v1.pkl
+  pit_rl: models/saved/pit_rl_v1.zip
+  winner: models/saved/winner_ensemble_v1.pkl
+
+rlm:
+  enabled: false
+  api_base: http://localhost:8000
+  api_key: none

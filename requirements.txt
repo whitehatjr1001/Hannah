@@ -1,0 +1,32 @@
+# Hannah Smith — requirements.txt
+
+# CLI
+click>=8.1
+rich>=13.7
+prompt_toolkit>=3.0
+python-dotenv>=1.0
+
+# Agent + LLM gateway
+litellm>=1.40
+anthropic>=0.25
+
+# F1 Data
+fastf1>=3.3
+requests>=2.31
+
+# Simulation + ML
+numpy>=1.26
+pandas>=2.1
+scikit-learn>=1.4
+xgboost>=2.0
+torch>=2.2
+stable-baselines3>=2.2
+gymnasium>=0.29
+
+# Config
+pyyaml>=6.0
+pydantic>=2.6
+
+# RLM server (v2 — install when ready)
+fastapi>=0.110
+uvicorn>=0.29
