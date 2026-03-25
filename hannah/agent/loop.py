@@ -82,7 +82,7 @@ class AgentLoop:
         self.registry = self.runtime.registry
         self.tools = self.registry.get_tool_specs()
 
-    async def run_turn(self, user_input: str) -> str:
+    async def run_turn(self, user_input: str, *, session_id: str = "default") -> str:
         turn_tools = self._select_tools_for_turn(user_input)
         messages = self.context_builder.build_main_turn(
             MainAgentContext(
@@ -94,7 +94,7 @@ class AgentLoop:
         )
         reply = await self.runtime.run_turn(
             messages=messages,
-            session_id="default",
+            session_id=session_id,
             turn_tools=turn_tools,
             should_retry=lambda final_text, retry_used: self._should_retry_analysis_turn(
                 user_input=user_input,

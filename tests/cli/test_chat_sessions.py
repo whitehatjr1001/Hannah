@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from click.testing import CliRunner
@@ -164,8 +165,6 @@ def test_chat_runtime_event_handler_renders_and_persists_subagent_events(tmp_pat
         session_id="cli:test",
     )
 
-    import asyncio
-
     asyncio.run(
         handler(
             EventEnvelope.create(
@@ -181,3 +180,77 @@ def test_chat_runtime_event_handler_renders_and_persists_subagent_events(tmp_pat
     assert rendered == ["subagent_progress:strategy"]
     lines = (tmp_path / "cli_test.jsonl").read_text(encoding="utf-8").splitlines()
     assert any('"record_type": "event"' in line for line in lines)
+
+
+class _FakeEventBus:
+    def __init__(self) -> None:
+        self.handlers = []
+
+    def subscribe(self, handler) -> None:
+        self.handlers.append(handler)
+
+    async def publish(self, envelope: EventEnvelope) -> None:
+        for handler in list(self.handlers):
+            await handler(envelope)
+
+
+class _SessionAwareAgentLoop:
+    def __init__(self, memory=None, **kwargs) -> None:
+        del kwargs
+        self.memory = memory
+        self.event_bus = _FakeEventBus()
+
+    async def run_turn(self, user_input: str, *, session_id: str = "default") -> str:
+        if self.memory is not None:
+            self.memory.add("user", user_input)
+        await self.event_bus.publish(
+            EventEnvelope.create(
+                "subagent_progress",
+                session_id=session_id,
+                message_id="msg-chat",
+                worker_id="strategy",
+                payload={"message": "Running race_sim"},
+            )
+        )
+        response = f"session={session_id}"
+        if self.memory is not None:
+            self.memory.add("assistant", response)
+        return response
+
+
+def test_chat_turn_threads_active_session_id_into_emitted_and_persisted_events(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("HANNAH_SESSION_DIR", str(tmp_path))
+    console = Console()
+    seen_event_session_ids: list[str] = []
+
+    monkeypatch.setattr(
+        chat_module,
+        "render_runtime_event",
+        lambda envelope: seen_event_session_ids.append(envelope.session_id) or envelope.event_type,
+    )
+
+    result = asyncio.run(
+        chat_module.run_message_chat_session(
+            message="compare strategies",
+            console=console,
+            panel_renderer=lambda text: text,
+            agent_loop_cls=_SessionAwareAgentLoop,
+            session_id="cli:active",
+        )
+    )
+
+    assert result == "session=cli:active"
+    assert seen_event_session_ids == ["cli:active"]
+    reloaded = SessionManager(sessions_dir=tmp_path).get_or_create("cli:active")
+    assert [message["content"] for message in reloaded.messages] == [
+        "compare strategies",
+        "session=cli:active",
+    ]
+    event_record = reloaded.event_records[0]
+    assert event_record["session_id"] == "cli:active"
+    assert event_record["payload"]["event_type"] == "subagent_progress"
+    assert event_record["payload"]["worker_id"] == "strategy"
+    assert event_record["payload"]["payload"]["message"] == "Running race_sim"

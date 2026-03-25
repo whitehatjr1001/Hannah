@@ -119,6 +119,16 @@ class WorkerRuntime:
             from hannah.runtime.core import RuntimeCore
 
             restricted_registry = self._restricted_registry(allowed_tools)
+            await self._publish(
+                "subagent_progress",
+                session_id=parent_session_id,
+                worker_id=spec.worker_id,
+                payload={
+                    "message": (
+                        f"Running worker task with tools: {', '.join(allowed_tools)}"
+                    )
+                },
+            )
             child_core = RuntimeCore(
                 provider=self.provider,
                 registry=restricted_registry,
@@ -137,6 +147,12 @@ class WorkerRuntime:
                 session_id=parent_session_id,
             )
             result_payload = self._coerce_result(reply.get("content", ""), spec.result_contract)
+            await self._publish(
+                "subagent_progress",
+                session_id=parent_session_id,
+                worker_id=spec.worker_id,
+                payload={"message": "Validating worker result"},
+            )
             contract_errors = self._validate_result_contract(result_payload, spec.result_contract)
             if contract_errors:
                 result = WorkerResult(

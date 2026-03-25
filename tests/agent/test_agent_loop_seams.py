@@ -159,10 +159,10 @@ def test_run_turn_delegates_to_runtime_core_with_built_context(
     monkeypatch.setattr(loop.runtime, "run_turn", _fake_runtime_run_turn)
 
     user_input = "predict the race strategy for the upcoming japanese grand prix"
-    result = asyncio.run(loop.run_turn(user_input))
+    result = asyncio.run(loop.run_turn(user_input, session_id="cli:japan"))
 
     assert result == "Adapter reply"
-    assert captured["session_id"] == "default"
+    assert captured["session_id"] == "cli:japan"
     assert captured["messages"][-1] == {"role": "user", "content": user_input}
     assert captured["messages"][1]["content"].startswith(
         "This turn is a race analysis or prediction request"

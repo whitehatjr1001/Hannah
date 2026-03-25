@@ -191,10 +191,12 @@ async def test_main_runtime_executes_spawn_tool_via_normal_tool_roundtrip() -> N
     assert "spawn" in main_tool_names
     assert "spawn" not in worker_tool_names
     assert "subagent_spawned" in bus.event_types
+    assert "subagent_progress" in bus.event_types
     assert "subagent_completed" in bus.event_types
 
     second_main_messages = provider.calls[2]["messages"]
-    spawn_result_message = second_main_messages[-1]
+    spawn_result_message = second_main_messages[-2]
+    subagent_result_message = second_main_messages[-1]
     assert spawn_result_message["role"] == "tool"
     assert spawn_result_message["name"] == "spawn"
     payload = json.loads(spawn_result_message["content"])
@@ -203,3 +205,7 @@ async def test_main_runtime_executes_spawn_tool_via_normal_tool_roundtrip() -> N
         "summary": "two-stop is stronger",
         "evidence": ["sim delta", "traffic window"],
     }
+    assert subagent_result_message["role"] == "system"
+    assert subagent_result_message["name"] == "subagent_result"
+    assert subagent_result_message["worker_id"] == payload["worker_id"]
+    assert json.loads(subagent_result_message["content"]) == payload

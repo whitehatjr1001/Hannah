@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import sys
 from pathlib import Path
@@ -209,6 +210,8 @@ async def _run_chat_turn(
     run_turn = getattr(agent_loop, "run_turn", None)
     if not callable(run_turn):
         raise RuntimeError("chat mode requires AgentLoop.run_turn()")
+    if "session_id" in inspect.signature(run_turn).parameters:
+        return await run_turn(message, session_id=session_id)
     return await run_turn(message)
 
 

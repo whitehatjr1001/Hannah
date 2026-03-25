@@ -4,7 +4,7 @@ import asyncio
 import inspect
 import json
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, TypedDict
 
 from hannah.runtime.bus import AsyncEventBus
 from hannah.runtime.context import RuntimeContextBuilder
@@ -56,7 +56,13 @@ class _MessageAdapter:
 
 RetryPolicy = Callable[[str, bool], bool]
 ToolCaller = Callable[[Any], Awaitable[dict[str, Any]]]
-ExecuteToolCallsHook = Callable[..., Awaitable[list[dict[str, str]]]]
+ExecuteToolCallsHook = Callable[..., Awaitable[list[dict[str, Any]]]]
+
+
+class RuntimeTurnReply(TypedDict):
+    role: str
+    content: str
+    messages: list[dict[str, Any]]
 
 
 class RuntimeCore:
@@ -107,7 +113,7 @@ class RuntimeCore:
         should_retry: RetryPolicy | None = None,
         retry_guidance: str | None = None,
         execute_tool_calls: ExecuteToolCallsHook | None = None,
-    ) -> dict[str, str]:
+    ) -> RuntimeTurnReply:
         state = TurnState(
             session_id=session_id,
             messages=self.context_builder.build_main_messages(messages),
@@ -224,7 +230,7 @@ class RuntimeCore:
         *,
         state: TurnState | None = None,
         call_tool: ToolCaller | None = None,
-    ) -> list[dict[str, str]]:
+    ) -> list[dict[str, Any]]:
         results = await asyncio.gather(
             *(
                 self._invoke_tool(tool_call, state=state, call_tool=call_tool)
@@ -233,7 +239,7 @@ class RuntimeCore:
             return_exceptions=True,
         )
 
-        messages: list[dict[str, str]] = []
+        messages: list[dict[str, Any]] = []
         for tool_call, result in zip(tool_calls, results):
             if isinstance(result, Exception):
                 self.console.print(f"  [red]✗ {tool_call.function.name}: {result}[/red]")
@@ -383,7 +389,7 @@ class RuntimeCore:
         *,
         tool_name: str,
         result: dict[str, Any] | None,
-    ) -> dict[str, str] | None:
+    ) -> dict[str, Any] | None:
         if tool_name != "spawn" or not isinstance(result, dict):
             return None
 
