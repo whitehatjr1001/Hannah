@@ -128,6 +128,55 @@ def test_run_command_completes_tool_roundtrip_without_crashing(monkeypatch: pyte
     }
 
 
+def test_run_turn_delegates_to_runtime_core_with_built_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    memory = _StubMemory(recent=[{"role": "assistant", "content": "Previous context."}])
+    loop = AgentLoop(memory=memory, registry=_StubRegistry(), provider=_RoundTripProvider())
+    captured: dict[str, Any] = {}
+
+    async def _fake_runtime_run_turn(
+        messages: list[dict[str, Any]],
+        *,
+        session_id: str,
+        turn_tools: list[dict[str, Any]] | None,
+        should_retry,
+        retry_guidance: str | None,
+    ) -> dict[str, str]:
+        captured["messages"] = messages
+        captured["session_id"] = session_id
+        captured["turn_tools"] = turn_tools
+        captured["retry_guidance"] = retry_guidance
+        captured["retry_permission_deferral"] = should_retry(
+            "Let me know if you'd like me to proceed with that analysis!",
+            False,
+        )
+        captured["retry_on_final_answer"] = should_retry("strategy locked", False)
+        return {"role": "assistant", "content": "Adapter reply"}
+
+    monkeypatch.setattr(loop.runtime, "run_turn", _fake_runtime_run_turn)
+
+    user_input = "predict the race strategy for the upcoming japanese grand prix"
+    result = asyncio.run(loop.run_turn(user_input))
+
+    assert result == "Adapter reply"
+    assert captured["session_id"] == "default"
+    assert captured["messages"][-1] == {"role": "user", "content": user_input}
+    assert captured["messages"][1]["content"].startswith(
+        "This turn is a race analysis or prediction request"
+    )
+    assert captured["messages"][2] == {"role": "assistant", "content": "Previous context."}
+    assert {tool["function"]["name"] for tool in captured["turn_tools"]} == {"race_data"}
+    assert captured["retry_permission_deferral"] is True
+    assert captured["retry_on_final_answer"] is False
+    assert captured["retry_guidance"] == (
+        "The user already asked you to do the analysis. "
+        "Do not ask for permission or defer. "
+        "Call the relevant tools now and answer decisively."
+    )
+    assert memory.added == [("user", user_input), ("assistant", "Adapter reply")]
+
+
 @pytest.mark.parametrize(
     ("raw_arguments", "expected"),
     [
