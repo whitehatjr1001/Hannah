@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from hannah.agent.tool_registry import ToolRegistry
-from hannah.agent.worker_runtime import WorkerPolicyError, WorkerSpec, validate_worker_spec
+from hannah.agent.worker_runtime import WorkerPolicyError, WorkerRuntime, WorkerSpec, validate_worker_spec
 from hannah.runtime.core import RuntimeCore
 
 
@@ -104,6 +104,50 @@ def test_nested_spawn_is_rejected() -> None:
 
 
 @pytest.mark.anyio
+async def test_run_worker_rejects_unknown_allowed_tools() -> None:
+    provider = _StubProvider()
+    runtime = WorkerRuntime(
+        provider=provider,
+        registry=ToolRegistry(),
+        event_bus=_RecordingBus(),
+    )
+    spec = WorkerSpec(
+        worker_id="worker-unknown",
+        task="analyze Bahrain strategy",
+        system_prompt="You are a strategy worker.",
+        allowed_tools=["race_data", "ghost_tool"],
+        result_contract={"summary": "string"},
+    )
+
+    with pytest.raises(WorkerPolicyError, match="ghost_tool"):
+        await runtime.run_worker(spec, parent_session_id="session-1")
+
+
+@pytest.mark.anyio
+async def test_run_worker_returns_error_result_on_contract_violation() -> None:
+    provider = _StubProvider()
+    provider.queue_text('{"summary": 42}')
+    runtime = WorkerRuntime(
+        provider=provider,
+        registry=ToolRegistry(),
+        event_bus=_RecordingBus(),
+    )
+    spec = WorkerSpec(
+        worker_id="worker-contract",
+        task="summarize Bahrain strategy",
+        system_prompt="You are a strategy worker.",
+        allowed_tools=["race_data"],
+        result_contract={"summary": "string"},
+    )
+
+    result = await runtime.run_worker(spec, parent_session_id="session-1")
+
+    assert result["status"] == "error"
+    assert "summary" in result["error"]
+    assert result["result"] == {"summary": 42}
+
+
+@pytest.mark.anyio
 async def test_main_runtime_executes_spawn_tool_via_normal_tool_roundtrip() -> None:
     provider = _StubProvider()
     provider._responses.append(
@@ -143,7 +187,9 @@ async def test_main_runtime_executes_spawn_tool_via_normal_tool_roundtrip() -> N
     assert reply["content"] == "Use the two-stop window."
     assert len(provider.calls) == 3
     main_tool_names = {tool["function"]["name"] for tool in provider.calls[0]["tools"]}
+    worker_tool_names = {tool["function"]["name"] for tool in provider.calls[1]["tools"]}
     assert "spawn" in main_tool_names
+    assert "spawn" not in worker_tool_names
     assert "subagent_spawned" in bus.event_types
     assert "subagent_completed" in bus.event_types
 

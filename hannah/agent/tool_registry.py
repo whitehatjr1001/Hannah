@@ -366,6 +366,9 @@ class ToolRegistry:
             )
         return specs
 
+    def tool_names(self) -> set[str]:
+        return set(self._tools)
+
     def with_runtime_tools(self, handlers: dict[str, object]) -> "ToolRegistry":
         tools = dict(self._tools)
         for name, handler in handlers.items():

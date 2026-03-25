@@ -107,17 +107,18 @@ class WorkerRuntime:
 
     async def run_worker(self, spec: WorkerSpec, *, parent_session_id: str) -> dict[str, Any]:
         validate_worker_spec(spec)
+        allowed_tools = self._resolve_allowed_tools(spec.allowed_tools)
         await self._publish(
             "subagent_spawned",
             session_id=parent_session_id,
             worker_id=spec.worker_id,
-            payload={"task": spec.task, "allowed_tools": list(spec.allowed_tools)},
+            payload={"task": spec.task, "allowed_tools": list(allowed_tools)},
         )
 
         try:
             from hannah.runtime.core import RuntimeCore
 
-            restricted_registry = self._restricted_registry(spec.allowed_tools)
+            restricted_registry = self._restricted_registry(allowed_tools)
             child_core = RuntimeCore(
                 provider=self.provider,
                 registry=restricted_registry,
@@ -135,10 +136,26 @@ class WorkerRuntime:
                 ],
                 session_id=parent_session_id,
             )
+            result_payload = self._coerce_result(reply.get("content", ""), spec.result_contract)
+            contract_errors = self._validate_result_contract(result_payload, spec.result_contract)
+            if contract_errors:
+                result = WorkerResult(
+                    worker_id=spec.worker_id,
+                    status="error",
+                    result=result_payload,
+                    error=f"result_contract violation: {'; '.join(contract_errors)}",
+                )
+                await self._publish(
+                    "subagent_completed",
+                    session_id=parent_session_id,
+                    worker_id=spec.worker_id,
+                    payload={"status": result.status, "error": result.error},
+                )
+                return result.to_dict()
             result = WorkerResult(
                 worker_id=spec.worker_id,
                 status="completed",
-                result=self._coerce_result(reply.get("content", ""), spec.result_contract),
+                result=result_payload,
             )
             await self._publish(
                 "subagent_completed",
@@ -156,11 +173,36 @@ class WorkerRuntime:
             )
             raise
 
+    def _resolve_allowed_tools(self, requested_tools: list[str]) -> list[str]:
+        known_tools = self._known_tool_names()
+        unknown_tools = sorted({name for name in requested_tools if name not in known_tools})
+        if unknown_tools:
+            joined = ", ".join(unknown_tools)
+            raise WorkerPolicyError(f"unknown allowed_tools requested: {joined}")
+        return list(requested_tools)
+
     def _restricted_registry(self, allowed_tools: list[str]) -> object:
         subset = getattr(self.registry, "subset", None)
-        if callable(subset):
-            return subset(allowed_tools)
-        return self.registry
+        restricted_registry = subset(allowed_tools) if callable(subset) else self.registry
+        tool_specs = getattr(restricted_registry, "get_tool_specs", None)
+        if callable(tool_specs) and not tool_specs():
+            raise WorkerPolicyError("allowed_tools resolved to an empty worker tool surface")
+        return restricted_registry
+
+    def _known_tool_names(self) -> set[str]:
+        tool_names = getattr(self.registry, "tool_names", None)
+        if callable(tool_names):
+            return set(tool_names())
+        tool_specs = getattr(self.registry, "get_tool_specs", None)
+        if not callable(tool_specs):
+            return set()
+        names: set[str] = set()
+        for spec in tool_specs():
+            function = spec.get("function", {})
+            name = function.get("name") if isinstance(function, dict) else None
+            if isinstance(name, str) and name:
+                names.add(name)
+        return names
 
     async def _publish(
         self,
@@ -199,3 +241,41 @@ class WorkerRuntime:
         if isinstance(parsed, str):
             return {summary_key: parsed}
         return {summary_key: json.dumps(parsed, default=str)}
+
+    def _validate_result_contract(
+        self,
+        result: dict[str, Any],
+        result_contract: dict[str, Any],
+    ) -> list[str]:
+        errors: list[str] = []
+        for key, expected in result_contract.items():
+            if key not in result:
+                errors.append(f"missing required {key}")
+                continue
+            error = self._validate_contract_value(key, result[key], expected)
+            if error is not None:
+                errors.append(error)
+        return errors
+
+    def _validate_contract_value(
+        self,
+        key: str,
+        value: Any,
+        expected: Any,
+    ) -> str | None:
+        if not isinstance(expected, str):
+            return None
+        expected_type = expected.strip().lower()
+        if expected_type == "string" and not isinstance(value, str):
+            return f"{key} should be string"
+        if expected_type == "integer" and (isinstance(value, bool) or not isinstance(value, int)):
+            return f"{key} should be integer"
+        if expected_type == "number" and (isinstance(value, bool) or not isinstance(value, (int, float))):
+            return f"{key} should be number"
+        if expected_type == "boolean" and not isinstance(value, bool):
+            return f"{key} should be boolean"
+        if expected_type in {"list", "array"} and not isinstance(value, list):
+            return f"{key} should be list"
+        if expected_type in {"object", "dict", "map"} and not isinstance(value, dict):
+            return f"{key} should be object"
+        return None
