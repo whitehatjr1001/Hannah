@@ -5,7 +5,6 @@ import json
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from hannah.agent.tool_registry import normalize_tool_args
 from hannah.runtime.bus import AsyncEventBus
 from hannah.runtime.context import RuntimeContextBuilder
 from hannah.runtime.events import EventEnvelope
@@ -56,6 +55,7 @@ class _MessageAdapter:
 
 RetryPolicy = Callable[[str, bool], bool]
 ToolCaller = Callable[[Any], Awaitable[dict[str, Any]]]
+ExecuteToolCallsHook = Callable[..., Awaitable[list[dict[str, str]]]]
 
 
 class RuntimeCore:
@@ -88,6 +88,7 @@ class RuntimeCore:
         turn_tools: list[dict[str, Any]] | None = None,
         should_retry: RetryPolicy | None = None,
         retry_guidance: str | None = None,
+        execute_tool_calls: ExecuteToolCallsHook | None = None,
     ) -> dict[str, str]:
         state = TurnState(
             session_id=session_id,
@@ -140,7 +141,11 @@ class RuntimeCore:
                         f"  [dim cyan]◆ calling tool:[/dim cyan] [cyan]{tool_call.function.name}[/cyan]"
                     )
                 state.append_message(message.model_dump())
-                state.extend_messages(await self._execute_tool_calls(tool_calls, state=state))
+                if execute_tool_calls is None:
+                    tool_messages = await self._execute_tool_calls(tool_calls, state=state)
+                else:
+                    tool_messages = await execute_tool_calls(tool_calls, state=state)
+                state.extend_messages(tool_messages)
                 continue
 
             final_text = message.content or ""
@@ -278,8 +283,6 @@ class RuntimeCore:
         normalizer = getattr(self.registry, "normalize_args", None)
         if callable(normalizer):
             arguments = normalizer(tool_call.function.name, arguments)
-        else:
-            arguments = self._normalize_tool_args_from_specs(tool_call.function.name, arguments)
         return await self.registry.call(tool_call.function.name, arguments)
 
     def _serialize_tool_message(self, payload: Any, *, tool_name: str) -> str:
@@ -345,17 +348,7 @@ class RuntimeCore:
         name: str,
         args: dict[str, Any],
     ) -> dict[str, Any]:
-        tool_specs = getattr(self.registry, "get_tool_specs", None)
-        if not callable(tool_specs):
-            return args
-        for tool in tool_specs():
-            function = tool.get("function", {})
-            if not isinstance(function, dict):
-                continue
-            if function.get("name") != name:
-                continue
-            parameters = function.get("parameters")
-            return normalize_tool_args(name, args, parameters=parameters)
+        del name
         return args
 
     def _coerce_first_message(self, response: object) -> _MessageAdapter:

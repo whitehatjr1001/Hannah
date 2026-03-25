@@ -7,7 +7,7 @@ from typing import Any
 
 from hannah.agent.memory import Memory
 from hannah.agent.persona import HANNAH_PERSONA
-from hannah.agent.tool_registry import ToolRegistry
+from hannah.agent.tool_registry import ToolRegistry, normalize_tool_args
 from hannah.cli.format import make_hannah_panel
 from hannah.config.loader import load_config
 from hannah.providers.registry import ProviderRegistry
@@ -100,6 +100,7 @@ class AgentLoop:
                 retry_used=retry_used,
             ),
             retry_guidance=self._analysis_retry_guidance(),
+            execute_tool_calls=self._execute_tool_calls,
         )
         final_text = reply.get("content", "")
         self.memory.add("user", user_input)
@@ -156,8 +157,17 @@ class AgentLoop:
         console.print(make_hannah_panel(final_text))
         console.print()
 
-    async def _execute_tool_calls(self, tool_calls: list) -> list[dict[str, str]]:
-        return await self.runtime._execute_tool_calls(tool_calls, call_tool=self._call_tool)
+    async def _execute_tool_calls(
+        self,
+        tool_calls: list,
+        *,
+        state: Any = None,
+    ) -> list[dict[str, str]]:
+        return await self.runtime._execute_tool_calls(
+            tool_calls,
+            state=state,
+            call_tool=self._call_tool,
+        )
 
     def _serialize_tool_message(self, payload: Any, *, tool_name: str) -> str:
         return self.runtime._serialize_tool_message(payload, tool_name=tool_name)
@@ -180,13 +190,28 @@ class AgentLoop:
         return self.runtime._record_count(value)
 
     async def _call_tool(self, tool_call) -> dict:
-        return await self.runtime._call_tool(tool_call)
+        raw_arguments = tool_call.function.arguments
+        arguments = self._load_tool_arguments(raw_arguments)
+        normalizer = getattr(self.registry, "normalize_args", None)
+        if callable(normalizer):
+            arguments = normalizer(tool_call.function.name, arguments)
+        else:
+            arguments = self._normalize_tool_args_from_specs(tool_call.function.name, arguments)
+        return await self.registry.call(tool_call.function.name, arguments)
 
     def _load_tool_arguments(self, raw_arguments: Any) -> dict[str, Any]:
         return self.runtime._load_tool_arguments(raw_arguments)
 
     def _normalize_tool_args_from_specs(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
-        return self.runtime._normalize_tool_args_from_specs(name, args)
+        for tool in self.tools:
+            function = tool.get("function", {})
+            if not isinstance(function, dict):
+                continue
+            if function.get("name") != name:
+                continue
+            parameters = function.get("parameters")
+            return normalize_tool_args(name, args, parameters=parameters)
+        return args
 
     def _coerce_first_message(self, response: object) -> Any:
         return self.runtime._coerce_first_message(response)

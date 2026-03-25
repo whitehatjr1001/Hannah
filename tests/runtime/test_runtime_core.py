@@ -150,3 +150,28 @@ async def test_runtime_core_emits_tool_events_and_reuses_tool_registry() -> None
         "tool": "race_data",
         "args": {"race": "bahrain"},
     }
+
+
+@pytest.mark.anyio
+async def test_runtime_core_reinvokes_provider_with_retry_guidance_once() -> None:
+    provider = _StubProvider()
+    provider.queue_text("I can analyze that. Let me know if you'd like me to proceed.")
+    provider.queue_text("strategy locked")
+    core = RuntimeCore(provider=provider, registry=_StubRegistry(), event_bus=_RecordingBus())
+
+    reply = await core.run_turn(
+        messages=[{"role": "user", "content": "analyze bahrain"}],
+        should_retry=lambda final_text, retry_used: (
+            (not retry_used) and "let me know if you'd like" in final_text.lower()
+        ),
+        retry_guidance="Do the analysis now.",
+    )
+
+    assert reply["content"] == "strategy locked"
+    assert len(provider.calls) == 2
+    second_messages = provider.calls[1]["messages"]
+    assert second_messages[-2] == {
+        "role": "assistant",
+        "content": "I can analyze that. Let me know if you'd like me to proceed.",
+    }
+    assert second_messages[-1] == {"role": "system", "content": "Do the analysis now."}

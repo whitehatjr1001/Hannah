@@ -142,11 +142,13 @@ def test_run_turn_delegates_to_runtime_core_with_built_context(
         turn_tools: list[dict[str, Any]] | None,
         should_retry,
         retry_guidance: str | None,
+        execute_tool_calls,
     ) -> dict[str, str]:
         captured["messages"] = messages
         captured["session_id"] = session_id
         captured["turn_tools"] = turn_tools
         captured["retry_guidance"] = retry_guidance
+        captured["execute_tool_calls"] = execute_tool_calls
         captured["retry_permission_deferral"] = should_retry(
             "Let me know if you'd like me to proceed with that analysis!",
             False,
@@ -167,6 +169,7 @@ def test_run_turn_delegates_to_runtime_core_with_built_context(
     )
     assert captured["messages"][2] == {"role": "assistant", "content": "Previous context."}
     assert {tool["function"]["name"] for tool in captured["turn_tools"]} == {"race_data"}
+    assert callable(captured["execute_tool_calls"])
     assert captured["retry_permission_deferral"] is True
     assert captured["retry_on_final_answer"] is False
     assert captured["retry_guidance"] == (
@@ -175,6 +178,44 @@ def test_run_turn_delegates_to_runtime_core_with_built_context(
         "Call the relevant tools now and answer decisively."
     )
     assert memory.added == [("user", user_input), ("assistant", "Adapter reply")]
+
+
+def test_run_turn_uses_adapter_execute_tool_calls_hook_in_real_roundtrip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    memory = _StubMemory()
+    registry = _StubRegistry()
+    provider = _RoundTripProvider()
+    loop = AgentLoop(memory=memory, registry=registry, provider=provider)
+    captured: dict[str, Any] = {}
+
+    monkeypatch.setattr(agent_loop.console, "print", lambda *args, **kwargs: None)
+
+    async def _fake_execute_tool_calls(
+        tool_calls: list[SimpleNamespace],
+        *,
+        state: Any = None,
+    ) -> list[dict[str, str]]:
+        captured["tool_names"] = [tool_call.function.name for tool_call in tool_calls]
+        captured["state"] = state
+        return [
+            {
+                "role": "tool",
+                "tool_call_id": tool_calls[0].id,
+                "name": tool_calls[0].function.name,
+                "content": json.dumps({"hook": "adapter_execute"}),
+            }
+        ]
+
+    monkeypatch.setattr(loop, "_execute_tool_calls", _fake_execute_tool_calls)
+
+    result = asyncio.run(loop.run_turn("Run simulation for Bahrain 2025."))
+
+    assert result == "Final recommendation."
+    assert captured["tool_names"] == ["race_data"]
+    assert captured["state"] is not None
+    second_messages = provider.calls[1]["messages"]
+    assert json.loads(second_messages[-1]["content"]) == {"hook": "adapter_execute"}
 
 
 @pytest.mark.parametrize(
