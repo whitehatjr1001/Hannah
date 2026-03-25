@@ -121,15 +121,23 @@ Return only the requested result contract.
 Task:
 <specific subtask>
 
+Allowed tools:
+- <tool name>
+- <tool name>
+
 Result contract:
 - summary
 - evidence
 - unresolved risks
 ```
 
+Prompt text is not the enforcement layer. The runtime should pass `allowed_tools` as structured worker configuration and the prompt should mirror that boundary for clarity.
+
 ## Skill Card Principles
 
-In this repo, a skill card means the instruction artifact that tells the runtime or a developer:
+In this redesign, a skill card means an authoring and reference artifact for developers and prompt authors. It does not imply a new runtime skill execution subsystem unless a later spec explicitly adds one.
+
+A skill card should tell authors:
 
 - when to use a skill
 - what problem it solves
@@ -233,6 +241,7 @@ For Hannah's runtime, prompts and skill cards should preserve these boundaries:
 - workers are bounded and cannot recursively spawn in v1 of the redesign
 - streaming events should align with real runtime actions
 - prompts should prefer evidence-backed outputs over stylistic flourish
+- claims about telemetry, simulation, prediction, or training outcomes must be grounded in tool outputs or explicit data absence, not inferred as facts from prior context alone
 
 ## Review Checklist
 
