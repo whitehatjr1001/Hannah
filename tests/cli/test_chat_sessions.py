@@ -9,6 +9,7 @@ from click.testing import CliRunner
 import hannah.cli.agent_command as agent_command_module
 import hannah.cli.app as app_module
 import hannah.cli.chat as chat_module
+from hannah.runtime.events import EventEnvelope
 from hannah.session.manager import SessionManager
 from hannah.utils.console import Console
 
@@ -142,3 +143,41 @@ def test_chat_local_provider_commands_are_handled(tmp_path, monkeypatch) -> None
         ("configure", "openai"),
         ("model", ".env"),
     ]
+
+
+def test_chat_runtime_event_handler_renders_and_persists_subagent_events(tmp_path, monkeypatch) -> None:
+    manager = SessionManager(sessions_dir=tmp_path)
+    session = manager.get_or_create("cli:test")
+    manager.save(session)
+    console = Console()
+    rendered: list[str] = []
+
+    monkeypatch.setattr(
+        chat_module,
+        "render_runtime_event",
+        lambda envelope: rendered.append(f"{envelope.event_type}:{envelope.worker_id}") or rendered[-1],
+    )
+
+    handler = chat_module.build_runtime_event_handler(
+        console=console,
+        manager=manager,
+        session_id="cli:test",
+    )
+
+    import asyncio
+
+    asyncio.run(
+        handler(
+            EventEnvelope.create(
+                "subagent_progress",
+                session_id="cli:test",
+                message_id="msg-1",
+                worker_id="strategy",
+                payload={"message": "Running race_sim"},
+            )
+        )
+    )
+
+    assert rendered == ["subagent_progress:strategy"]
+    lines = (tmp_path / "cli_test.jsonl").read_text(encoding="utf-8").splitlines()
+    assert any('"record_type": "event"' in line for line in lines)

@@ -8,7 +8,9 @@ from typing import Any
 
 import pytest
 
+from hannah.cli.format import render_runtime_event
 from hannah.runtime.core import RuntimeCore
+from hannah.runtime.events import EventEnvelope
 
 
 @dataclass
@@ -175,3 +177,18 @@ async def test_runtime_core_reinvokes_provider_with_retry_guidance_once() -> Non
         "content": "I can analyze that. Let me know if you'd like me to proceed.",
     }
     assert second_messages[-1] == {"role": "system", "content": "Do the analysis now."}
+
+
+def test_render_runtime_event_formats_subagent_progress() -> None:
+    event = EventEnvelope.create(
+        "subagent_progress",
+        session_id="session-1",
+        message_id="msg-1",
+        worker_id="strategy",
+        payload={"message": "Running race_sim"},
+    )
+
+    renderable = render_runtime_event(event)
+
+    assert "strategy" in str(renderable)
+    assert "Running race_sim" in str(renderable)

@@ -10,6 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from hannah.session.event_records import is_event_record, serialize_event_record
+
 
 def _default_sessions_dir() -> Path:
     return Path(os.getenv("HANNAH_SESSION_DIR", "data/sessions"))
@@ -31,6 +33,7 @@ class Session:
 
     key: str
     messages: list[dict[str, Any]] = field(default_factory=list)
+    event_records: list[dict[str, Any]] = field(default_factory=list)
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -62,6 +65,7 @@ class Session:
 
     def clear(self) -> None:
         self.messages = []
+        self.event_records = []
         self.updated_at = datetime.now()
 
 
@@ -97,6 +101,7 @@ class SessionManager:
             updated_at: datetime | None = None
             metadata: dict[str, Any] = {}
             messages: list[dict[str, Any]] = []
+            event_records: list[dict[str, Any]] = []
             with path.open("r", encoding="utf-8") as handle:
                 for line in handle:
                     record = line.strip()
@@ -108,10 +113,14 @@ class SessionManager:
                         updated_at = _parse_timestamp(payload.get("updated_at"))
                         metadata = payload.get("metadata", {})
                         continue
+                    if is_event_record(payload):
+                        event_records.append(payload)
+                        continue
                     messages.append(payload)
             return Session(
                 key=key,
                 messages=messages,
+                event_records=event_records,
                 created_at=created_at or datetime.now(),
                 updated_at=updated_at or created_at or datetime.now(),
                 metadata=metadata,
@@ -133,7 +142,17 @@ class SessionManager:
             handle.write(json.dumps(metadata, ensure_ascii=False) + "\n")
             for message in session.messages:
                 handle.write(json.dumps(message, ensure_ascii=False) + "\n")
+            for event_record in session.event_records:
+                handle.write(json.dumps(event_record, ensure_ascii=False) + "\n")
         self._cache[session.key] = session
+
+    def append_event(self, session_name: str, event: Any) -> None:
+        session = self.get_or_create(session_name)
+        session.event_records.append(
+            serialize_event_record(event, session_id=session_name)
+        )
+        session.updated_at = datetime.now()
+        self.save(session)
 
     def list_sessions(self) -> list[dict[str, Any]]:
         sessions: list[dict[str, Any]] = []

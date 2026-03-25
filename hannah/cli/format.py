@@ -1,5 +1,14 @@
 """Formatting helpers for the Hannah CLI."""
 
+from __future__ import annotations
+
+from typing import Any
+
+try:
+    from rich.text import Text
+except Exception:  # pragma: no cover - fallback path
+    Text = None  # type: ignore[assignment]
+
 from hannah.utils.console import Panel
 
 BANNER = """[bold magenta]
@@ -22,6 +31,28 @@ def make_hannah_panel(text: str) -> Panel:
         border_style="dim",
         padding=(0, 2),
     )
+
+
+def render_runtime_event(event: Any) -> Any | None:
+    """Render streamed subagent activity without printing the full runtime bus."""
+    worker_id = getattr(event, "worker_id", None) or "worker"
+    payload = getattr(event, "payload", {})
+    event_type = getattr(event, "event_type", "")
+
+    if event_type == "subagent_spawned":
+        task = payload.get("task", "starting task")
+        return _make_text(f"[subagent] {worker_id} spawned: {task}", style="cyan")
+
+    if event_type == "subagent_progress":
+        message = payload.get("message", "working")
+        return _make_text(f"[subagent] {worker_id}: {message}", style="cyan")
+
+    if event_type == "subagent_completed":
+        status = payload.get("status", "completed")
+        style = "green" if status == "completed" else "red"
+        return _make_text(f"[subagent] {worker_id} {status}", style=style)
+
+    return None
 
 
 def format_trace_summary(trace: dict) -> str:
@@ -68,3 +99,9 @@ def format_trace_summary(trace: dict) -> str:
         )
         lines.append(f"Moments: {laps}")
     return "\n".join(lines)
+
+
+def _make_text(content: str, *, style: str) -> Any:
+    if Text is None:
+        return content
+    return Text(content, style=style)

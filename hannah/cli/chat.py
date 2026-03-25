@@ -6,7 +6,7 @@ import asyncio
 import os
 import sys
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 try:
     from prompt_toolkit import PromptSession
@@ -17,7 +17,7 @@ except Exception:  # pragma: no cover - fallback path is covered instead
     HTML = None  # type: ignore[assignment]
     FileHistory = None  # type: ignore[assignment]
 
-from hannah.cli.format import BANNER
+from hannah.cli.format import BANNER, render_runtime_event
 from hannah.cli.provider_ui import (
     render_model_status,
     render_provider_status_table,
@@ -106,6 +106,7 @@ async def run_interactive_chat_session(
             session_id=active_session,
             manager=manager,
             agent_loop_cls=agent_loop_cls,
+            console=console,
         )
         console.print()
         console.print(panel_renderer(response))
@@ -151,6 +152,7 @@ async def run_message_chat_session(
         session_id=active_session,
         manager=manager,
         agent_loop_cls=agent_loop_cls,
+        console=console,
     )
     _print_session_status(console=console, session_id=active_session)
     console.print()
@@ -191,10 +193,19 @@ async def _run_chat_turn(
     session_id: str,
     manager: SessionManager,
     agent_loop_cls: type,
+    console: Console,
 ) -> str:
     session = manager.get_or_create(session_id)
     memory = SessionMemory(manager=manager, session=session)
     agent_loop = agent_loop_cls(memory=memory)
+    _subscribe_runtime_events(
+        agent_loop=agent_loop,
+        handler=build_runtime_event_handler(
+            console=console,
+            manager=manager,
+            session_id=session_id,
+        ),
+    )
     run_turn = getattr(agent_loop, "run_turn", None)
     if not callable(run_turn):
         raise RuntimeError("chat mode requires AgentLoop.run_turn()")
@@ -288,3 +299,29 @@ def _read_user_input(*, prompt_session, session_id: str) -> str:
     if prompt_session is None or HTML is None:
         return input(f"You [{session_id}] > ")
     return prompt_session.prompt(HTML("<b fg='ansiblue'>You</b> <style fg='ansibrightblack'>›</style> "))
+
+
+def build_runtime_event_handler(
+    *,
+    console: Console,
+    manager: SessionManager,
+    session_id: str,
+) -> Callable[[Any], Awaitable[None]]:
+    async def _handle_runtime_event(event: Any) -> None:
+        manager.append_event(session_id, event)
+        renderable = render_runtime_event(event)
+        if renderable is not None:
+            console.print(renderable)
+
+    return _handle_runtime_event
+
+
+def _subscribe_runtime_events(
+    *,
+    agent_loop: Any,
+    handler: Callable[[Any], Awaitable[None]],
+) -> None:
+    event_bus = getattr(agent_loop, "event_bus", None)
+    subscribe = getattr(event_bus, "subscribe", None)
+    if callable(subscribe):
+        subscribe(handler)

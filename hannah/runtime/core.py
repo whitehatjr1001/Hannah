@@ -177,12 +177,17 @@ class RuntimeCore:
                 retry_used = True
                 continue
 
+            state.append_message(message.model_dump())
             await self._publish_event(
                 "final_answer_emitted",
                 state,
                 payload={"content": final_text},
             )
-            return {"role": "assistant", "content": final_text}
+            return {
+                "role": "assistant",
+                "content": final_text,
+                "messages": state.snapshot_messages(),
+            }
 
     def _resolve_turn_tools(
         self,
@@ -252,6 +257,12 @@ class RuntimeCore:
                     "content": content,
                 }
             )
+            subagent_result_message = self._build_subagent_result_message(
+                tool_name=tool_call.function.name,
+                result=result if not isinstance(result, Exception) else None,
+            )
+            if subagent_result_message is not None:
+                messages.append(subagent_result_message)
         return messages
 
     async def _invoke_tool(
@@ -366,6 +377,26 @@ class RuntimeCore:
             spec,
             parent_session_id=parent_session_id,
         )
+
+    def _build_subagent_result_message(
+        self,
+        *,
+        tool_name: str,
+        result: dict[str, Any] | None,
+    ) -> dict[str, str] | None:
+        if tool_name != "spawn" or not isinstance(result, dict):
+            return None
+
+        worker_id = result.get("worker_id")
+        if not isinstance(worker_id, str) or not worker_id:
+            return None
+
+        return {
+            "role": "system",
+            "name": "subagent_result",
+            "worker_id": worker_id,
+            "content": json.dumps(result, default=str),
+        }
 
     def _serialize_tool_message(self, payload: Any, *, tool_name: str) -> str:
         if isinstance(payload, str):
