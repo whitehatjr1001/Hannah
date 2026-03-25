@@ -16,6 +16,7 @@ class AsyncEventBus:
     def __init__(self) -> None:
         self._subscribers: Dict[Optional[str], List[Subscriber]] = defaultdict(list)
         self._locks: Dict[Subscriber, asyncio.Lock] = {}
+        self._publish_lock = asyncio.Lock()
 
     def subscribe(
         self, handler: Subscriber, event_type: Optional[str] = None
@@ -29,17 +30,18 @@ class AsyncEventBus:
         if envelope.event_type not in EVENT_TYPES:
             raise ValueError(f"Unsupported event type: {envelope.event_type}")
 
-        tasks: List[Awaitable[None]] = []
-        for subscribed_type, handlers in self._subscribers.items():
-            if subscribed_type is not None and subscribed_type != envelope.event_type:
-                continue
-            for handler in handlers:
-                tasks.append(self._dispatch(handler, envelope))
+        async with self._publish_lock:
+            tasks: List[Awaitable[None]] = []
+            for subscribed_type, handlers in self._subscribers.items():
+                if subscribed_type is not None and subscribed_type != envelope.event_type:
+                    continue
+                for handler in handlers:
+                    tasks.append(self._dispatch(handler, envelope))
 
-        if not tasks:
-            return
+            if not tasks:
+                return
 
-        await asyncio.gather(*tasks)
+            await asyncio.gather(*tasks)
 
     async def _dispatch(self, handler: Subscriber, envelope: EventEnvelope) -> None:
         lock = self._locks.setdefault(handler, asyncio.Lock())

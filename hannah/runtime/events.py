@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
+from types import MappingProxyType
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 RUNTIME_EVENT_TYPES: Tuple[str, ...] = (
     "user_message_received",
@@ -20,18 +21,35 @@ RUNTIME_EVENT_TYPES: Tuple[str, ...] = (
 EVENT_TYPES = frozenset(RUNTIME_EVENT_TYPES)
 
 
+def _freeze_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _freeze_value(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return tuple(_freeze_value(item) for item in value)
+    if isinstance(value, tuple):
+        return tuple(_freeze_value(item) for item in value)
+    if isinstance(value, set):
+        return frozenset(_freeze_value(item) for item in value)
+    return value
+
+
+def _freeze_payload(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    return MappingProxyType({key: _freeze_value(value) for key, value in payload.items()})
+
+
 @dataclass(frozen=True)
 class EventEnvelope:
     event_type: str
     timestamp: datetime
     session_id: str
     message_id: str
-    payload: Dict[str, Any] = field(default_factory=dict)
+    payload: Mapping[str, Any] = field(default_factory=dict)
     worker_id: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.event_type not in EVENT_TYPES:
             raise ValueError(f"Unsupported event type: {self.event_type}")
+        object.__setattr__(self, "payload", _freeze_payload(dict(self.payload)))
 
     @classmethod
     def create(
