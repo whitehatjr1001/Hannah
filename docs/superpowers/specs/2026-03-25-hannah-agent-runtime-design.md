@@ -200,3 +200,7 @@ Use a hybrid refactor rather than a full rewrite:
 - move generic subagent spawning and event streaming into the shared core
 
 This achieves the desired product shape without discarding the existing F1-specific assets.
+
+## Companion Authoring Guide
+
+The redesign should ship with a short companion guide for prompt and skill-card authoring so new runtime prompts, tool descriptions, and spawned worker definitions stay consistent. That guide should live alongside this spec and be treated as supporting design documentation for implementation planning.
