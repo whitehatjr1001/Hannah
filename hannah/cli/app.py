@@ -63,6 +63,7 @@ except Exception:
     def load_dotenv() -> None:
         return None
 
+from hannah.agent.loop import AgentLoop
 from hannah.agent.tool_registry import ToolRegistry
 from hannah.cli import agent_command as agent_command_module
 from hannah.cli import command_prompts
@@ -81,14 +82,7 @@ console = Console()
 
 
 def _run_agent_command(command: str) -> None:
-    asyncio.run(
-        agent_command_module.run_agent_command(
-            command,
-            interactive=False,
-            session_id="cli:direct",
-            new_session=False,
-        )
-    )
+    asyncio.run(AgentLoop().run_command(command))
 
 
 def _parse_driver_codes(raw: str) -> list[str]:

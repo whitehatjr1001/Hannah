@@ -175,3 +175,37 @@ def test_predict_and_strategy_use_centralized_wrapper_prompts(monkeypatch) -> No
         ),
     ]
     assert seen_messages == ["predict prompt", "strategy prompt"]
+
+
+def test_sandbox_fetch_and_train_stay_off_shared_agent_runtime(monkeypatch) -> None:
+    runner = CliRunner()
+    direct_calls: list[str] = []
+
+    async def fail_if_shared_runtime_used(
+        message: str | None,
+        *,
+        interactive: bool,
+        session_id: str,
+        new_session: bool,
+    ) -> str:
+        del message, interactive, session_id, new_session
+        raise AssertionError("shared runtime should not be used")
+
+    class _FakeAgentLoop:
+        def __init__(self, *args, **kwargs) -> None:
+            del args, kwargs
+
+        async def run_command(self, command: str) -> None:
+            direct_calls.append(command)
+
+    monkeypatch.setattr(agent_command_module, "run_agent_command", fail_if_shared_runtime_used)
+    monkeypatch.setattr(app_module, "AgentLoop", _FakeAgentLoop, raising=False)
+
+    sandbox_result = runner.invoke(app_module.cli, ["sandbox", "--agents", "VER,NOR", "--race", "bahrain"])
+    fetch_result = runner.invoke(app_module.cli, ["fetch", "--race", "monza", "--year", "2025", "--session", "R"])
+    train_result = runner.invoke(app_module.cli, ["train", "all", "--years", "2024"])
+
+    assert sandbox_result.exit_code == 0
+    assert fetch_result.exit_code == 0
+    assert train_result.exit_code == 0
+    assert len(direct_calls) == 3
