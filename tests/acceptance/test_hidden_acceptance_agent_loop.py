@@ -13,6 +13,7 @@ from click.testing import CliRunner
 
 import hannah.cli.agent_command as agent_command_module
 import hannah.cli.app as app_module
+import hannah.cli.command_prompts as command_prompts_module
 from hannah.agent.context import RaceContext
 from hannah.agent.loop import AgentLoop
 from hannah.agent.tool_registry import normalize_tool_args
@@ -267,6 +268,18 @@ def test_hidden_primary_agent_and_wrappers_preserve_runtime_path_boundaries(monk
     agent_result = runner.invoke(app_module.cli, ["agent", "--message", "Should we undercut now?"])
     chat_result = runner.invoke(app_module.cli, ["chat", "--message", "Should we undercut now?"])
     ask_result = runner.invoke(app_module.cli, ["ask", "Should we undercut now?"])
+    simulate_result = runner.invoke(
+        app_module.cli,
+        ["simulate", "--race", "bahrain", "--year", "2026", "--driver", "VER", "--laps", "57", "--weather", "wet"],
+    )
+    predict_result = runner.invoke(
+        app_module.cli,
+        ["predict", "--race", "monza", "--year", "2025"],
+    )
+    strategy_result = runner.invoke(
+        app_module.cli,
+        ["strategy", "--race", "bahrain", "--lap", "22", "--driver", "VER", "--type", "undercut"],
+    )
     sandbox_result = runner.invoke(
         app_module.cli,
         ["sandbox", "--agents", "VER,NOR,LEC", "--race", "bahrain"],
@@ -275,11 +288,46 @@ def test_hidden_primary_agent_and_wrappers_preserve_runtime_path_boundaries(monk
     assert agent_result.exit_code == 0
     assert chat_result.exit_code == 0
     assert ask_result.exit_code == 0
+    assert simulate_result.exit_code == 0
+    assert predict_result.exit_code == 0
+    assert strategy_result.exit_code == 0
     assert sandbox_result.exit_code == 0
     assert shared_runtime_calls == [
         ("Should we undercut now?", False, "cli:direct", False, True),
         ("Should we undercut now?", False, "cli:direct", False, True),
         ("Should we undercut now?", False, "cli:direct", False, False),
+        (
+            command_prompts_module.build_simulate_intent(
+                race="bahrain",
+                year=2026,
+                driver="VER",
+                laps=57,
+                weather="wet",
+            ),
+            False,
+            "cli:direct",
+            False,
+            False,
+        ),
+        (
+            command_prompts_module.build_predict_intent(race="monza", year=2025),
+            False,
+            "cli:direct",
+            False,
+            False,
+        ),
+        (
+            command_prompts_module.build_strategy_intent(
+                race="bahrain",
+                lap=22,
+                driver="VER",
+                strategy_type="undercut",
+            ),
+            False,
+            "cli:direct",
+            False,
+            False,
+        ),
     ]
     assert len(direct_runtime_calls) == 1
     assert "Run a full sandbox race at bahrain" in direct_runtime_calls[0]

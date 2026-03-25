@@ -44,12 +44,15 @@ The short version:
 - `hannah agent` on a real TTY launches the interactive session path
 - `hannah chat` is a compatibility wrapper over that same runtime path
 - `hannah ask` is a compatibility wrapper for freeform one-shot turns
+- `hannah simulate`, `hannah predict`, and `hannah strategy` are intent-building wrappers over that same shared runtime path
 
 The runtime boundary is intentional:
 
 - `agent` and `chat` use session-backed persistence
 - `ask` preserves the older one-shot behavior without session persistence
-- direct utility commands such as `sandbox`, `fetch`, and `train` can still stay off the shared runtime when they intentionally call legacy command helpers
+- `simulate`, `predict`, and `strategy` still enter through `hannah/cli/agent_command.py`; they differ only by building structured natural-language intents first
+- direct utility commands such as `sandbox`, `fetch`, and `train` stay off the shared `agent_command` and session-wrapper path when they intentionally call legacy command helpers
+- those utility commands are still on the shared runtime core because `AgentLoop` remains a compatibility adapter over `RuntimeCore`
 
 ---
 
