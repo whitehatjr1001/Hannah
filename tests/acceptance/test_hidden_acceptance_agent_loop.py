@@ -3,15 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from dataclasses import dataclass, field
 from typing import Any, Final
 
 import pytest
+from click.testing import CliRunner
 
+import hannah.cli.agent_command as agent_command_module
+import hannah.cli.app as app_module
 from hannah.agent.context import RaceContext
 from hannah.agent.loop import AgentLoop
+from hannah.agent.tool_registry import normalize_tool_args
 from hannah.agent.subagents import PredictAgent, RivalAgent, SimAgent, StrategyAgent, SubAgentResult, spawn_all
+from hannah.agent.worker_runtime import SPAWN_TOOL_SPEC
 
 
 @dataclass
@@ -112,6 +118,92 @@ class _FakeProvider:
         }
 
 
+class _AcceptanceRuntimeRegistry:
+    def __init__(self, handlers: dict[str, Any] | None = None) -> None:
+        self._handlers = handlers or {}
+
+    def get_tool_specs(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "spawn",
+                    "description": "Spawn a bounded worker.",
+                    "parameters": dict(SPAWN_TOOL_SPEC["parameters"]),
+                },
+            }
+        ]
+
+    def with_runtime_tools(self, handlers: dict[str, Any]) -> "_AcceptanceRuntimeRegistry":
+        return _AcceptanceRuntimeRegistry(handlers=dict(handlers))
+
+    def normalize_args(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        assert name == "spawn"
+        return normalize_tool_args(name, args, parameters=SPAWN_TOOL_SPEC["parameters"])
+
+    async def call(self, name: str, args: dict[str, Any], *, state: Any = None) -> dict[str, Any]:
+        handler = self._handlers[name]
+        if "state" in inspect.signature(handler).parameters:
+            result = handler(**args, state=state)
+        else:
+            result = handler(**args)
+        if inspect.isawaitable(result):
+            return await result
+        return result
+
+
+class _HiddenNestedSpawnProvider:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def complete(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        temperature: float,
+        max_tokens: int,
+    ) -> dict[str, Any]:
+        del temperature, max_tokens
+        snapshot = json.loads(json.dumps(messages))
+        self.calls.append({"messages": snapshot, "tools": tools})
+        if len(self.calls) == 1:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "hidden-nested-spawn",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "spawn",
+                                        "arguments": {
+                                            "task": "delegate Bahrain strategy",
+                                            "system_prompt": "You are a planner worker.",
+                                            "allowed_tools": ["spawn"],
+                                            "result_contract": {"summary": "string"},
+                                        },
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "Nested spawn was blocked and reported cleanly.",
+                    }
+                }
+            ]
+        }
+
+
 def _tool_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [message for message in messages if message.get("role") == "tool"]
 
@@ -143,6 +235,88 @@ def test_hidden_agent_loop_toolflow_and_failure_contract() -> None:
     assert fake_memory.history[-2:] == [
         {"role": "user", "content": "strategy check for bahrain"},
         {"role": "assistant", "content": "Decision locked. Continue on current stint."},
+    ]
+
+
+def test_hidden_primary_agent_and_wrappers_preserve_runtime_path_boundaries(monkeypatch) -> None:
+    runner = CliRunner()
+    shared_runtime_calls: list[tuple[str | None, bool, str, bool, bool]] = []
+    direct_runtime_calls: list[str] = []
+
+    async def _fake_run_agent_command(
+        message: str | None,
+        *,
+        interactive: bool,
+        session_id: str,
+        new_session: bool,
+        persist_session: bool,
+    ) -> str:
+        shared_runtime_calls.append((message, interactive, session_id, new_session, persist_session))
+        return "ok"
+
+    class _FakeDirectLoop:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            del args, kwargs
+
+        async def run_command(self, command: str) -> None:
+            direct_runtime_calls.append(command)
+
+    monkeypatch.setattr(agent_command_module, "run_agent_command", _fake_run_agent_command)
+    monkeypatch.setattr(app_module, "AgentLoop", _FakeDirectLoop, raising=False)
+
+    agent_result = runner.invoke(app_module.cli, ["agent", "--message", "Should we undercut now?"])
+    chat_result = runner.invoke(app_module.cli, ["chat", "--message", "Should we undercut now?"])
+    ask_result = runner.invoke(app_module.cli, ["ask", "Should we undercut now?"])
+    sandbox_result = runner.invoke(
+        app_module.cli,
+        ["sandbox", "--agents", "VER,NOR,LEC", "--race", "bahrain"],
+    )
+
+    assert agent_result.exit_code == 0
+    assert chat_result.exit_code == 0
+    assert ask_result.exit_code == 0
+    assert sandbox_result.exit_code == 0
+    assert shared_runtime_calls == [
+        ("Should we undercut now?", False, "cli:direct", False, True),
+        ("Should we undercut now?", False, "cli:direct", False, True),
+        ("Should we undercut now?", False, "cli:direct", False, False),
+    ]
+    assert len(direct_runtime_calls) == 1
+    assert "Run a full sandbox race at bahrain" in direct_runtime_calls[0]
+
+
+def test_hidden_nested_spawn_policy_error_is_contained_and_reported() -> None:
+    provider = _HiddenNestedSpawnProvider()
+    memory = _FakeMemory()
+    loop = AgentLoop(
+        memory=memory,
+        registry=_AcceptanceRuntimeRegistry(),
+        provider=provider,
+    )
+
+    final_text = asyncio.run(loop.run_turn("delegate Bahrain strategy"))
+
+    assert final_text == "Nested spawn was blocked and reported cleanly."
+    assert len(provider.calls) == 2
+
+    second_pass_messages = provider.calls[1]["messages"]
+    spawn_tool_message = next(
+        message
+        for message in second_pass_messages
+        if message.get("role") == "tool" and message.get("name") == "spawn"
+    )
+    payload = json.loads(spawn_tool_message["content"])
+
+    assert payload["status"] == "error"
+    assert payload["tool"] == "spawn"
+    assert "nested spawn is not allowed in slice 1" in payload["error"]
+    assert not any(
+        message.get("role") == "system" and message.get("name") == "subagent_result"
+        for message in second_pass_messages
+    )
+    assert memory.history[-2:] == [
+        {"role": "user", "content": "delegate Bahrain strategy"},
+        {"role": "assistant", "content": "Nested spawn was blocked and reported cleanly."},
     ]
 
 

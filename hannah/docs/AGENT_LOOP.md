@@ -2,17 +2,17 @@
 
 ## Purpose
 
-This document explains how a single Hannah turn moves from CLI input to provider call to tool execution to final answer.
+This document describes the current Hannah agent runtime after slice 1.
+
+The primary runtime surface is `hannah agent`. Legacy commands such as `ask` and `chat` are compatibility wrappers over the same shared runtime path. `AgentLoop` still exists, but it is now a compatibility adapter over `RuntimeCore`.
 
 The short version:
 
-1. the CLI or chat TUI collects a user message
-2. `AgentLoop` builds a prompt from persona + guidance + memory + user input
-3. the provider decides between hosted LiteLLM and local fallback
-4. if the model asks for tools, Hannah runs them and feeds results back into the loop
-5. when the model returns final text, Hannah stores it in memory and renders it back to the user
-
-This is the core runtime path for Hannah. The simulator and data tools stay underneath the loop; the LLM does not own race state or invent telemetry.
+1. a CLI surface collects a user message
+2. `RuntimeCore` owns the turn, provider call, tool execution, worker spawning, and runtime events
+3. `AgentLoop` adapts existing memory/persona/tool-selection behavior onto that core
+4. runtime events stream to the terminal and persist to JSONL session records
+5. tools and simulation layers still own the F1 domain work
 
 ---
 
@@ -21,333 +21,176 @@ This is the core runtime path for Hannah. The simulator and data tools stay unde
 | File | Responsibility |
 | --- | --- |
 | `hannah.py` | Root CLI wrapper |
-| `hannah/cli/app.py` | Click commands like `ask`, `strategy`, `simulate`, `train`, `chat` |
-| `hannah/cli/chat.py` | Nanobot-style TUI, slash commands, session handoff into `AgentLoop` |
-| `hannah/agent/loop.py` | Main tool-using agent loop |
-| `hannah/agent/persona.py` | System prompt for strategist behavior |
-| `hannah/agent/tool_registry.py` | Tool discovery, schema export, argument normalization |
-| `hannah/providers/registry.py` | Provider selection entrypoint |
-| `hannah/providers/litellm_provider.py` | Hosted LiteLLM path plus local fallback bridge |
-| `hannah/providers/local_fallback.py` | Deterministic offline planner when no external model is available |
-| `hannah/agent/memory.py` | SQLite-backed memory for non-chat runs |
-| `hannah/session/manager.py` | JSONL session store and `SessionMemory` adapter for TUI chat |
+| `hannah/cli/app.py` | Registers `agent` as the primary runtime command plus compatibility wrappers |
+| `hannah/cli/agent_command.py` | Shared one-shot and interactive execution path for `agent` and wrapper commands |
+| `hannah/cli/chat.py` | Session-aware interactive shell and runtime-event subscription |
+| `hannah/agent/loop.py` | Compatibility adapter that builds prompts, selects tools, and delegates turn execution to `RuntimeCore` |
+| `hannah/runtime/core.py` | Shared runtime owner for provider calls, tool roundtrips, worker spawning, and event emission |
+| `hannah/runtime/context.py` | Main-agent and worker message assembly |
+| `hannah/runtime/events.py` | Runtime event envelope and allowed event names |
+| `hannah/runtime/bus.py` | Async event bus used for streaming and persistence hooks |
+| `hannah/agent/worker_runtime.py` | Generic worker execution, `WorkerSpec`, spawn policy, and worker result handling |
+| `hannah/agent/tool_registry.py` | Tool discovery plus runtime-bound tool binding, normalization, and dispatch |
+| `hannah/session/manager.py` | JSONL session persistence for chat and `agent` session mode |
+| `hannah/session/event_records.py` | JSON-safe serialization for persisted runtime events |
 
 ---
 
-## End-To-End Flow
+## Runtime Surfaces
 
-```text
-user input
-  -> CLI command or TUI chat
-  -> AgentLoop.__init__()
-     -> load config
-     -> build tool registry
-     -> build provider
-     -> attach memory backend
-  -> AgentLoop.run_turn(user_input)
-     -> build messages
-     -> select allowed tools for this turn
-     -> provider.complete(messages, tools, ...)
-        -> hosted LiteLLM
-        -> or local fallback
-     -> if tool calls:
-        -> normalize args
-        -> execute tools concurrently
-        -> append tool messages
-        -> loop again
-     -> if final answer:
-        -> optional retry if the model tried to defer instead of acting
-        -> save user + assistant messages to memory
-        -> return final text
-  -> CLI/TUI renders the answer
-```
+`hannah agent` is the canonical entrypoint.
+
+- `hannah agent --message "..."` runs a one-shot turn through the shared runtime
+- `hannah agent` on a real TTY launches the interactive session path
+- `hannah chat` is a compatibility wrapper over that same runtime path
+- `hannah ask` is a compatibility wrapper for freeform one-shot turns
+
+The runtime boundary is intentional:
+
+- `agent` and `chat` use session-backed persistence
+- `ask` preserves the older one-shot behavior without session persistence
+- direct utility commands such as `sandbox`, `fetch`, and `train` can still stay off the shared runtime when they intentionally call legacy command helpers
 
 ---
 
-## Step 1: Entry Into The Loop
+## AgentLoop Compatibility Layer
 
-There are two common entry paths:
+`AgentLoop` is no longer the core runtime owner.
 
-- CLI command path from `hannah/cli/app.py`
-- interactive chat path from `hannah/cli/chat.py`
+Its job is now:
 
-Examples:
+1. load config, memory, provider, and registry
+2. build main-turn messages from persona, dynamic guidance, memory, and user input
+3. choose the per-turn tool surface
+4. call `RuntimeCore.run_turn(...)`
+5. persist the final user and assistant messages through the existing memory interface
 
-- `hannah ask "Should VER pit under VSC on lap 34?"`
-- `hannah strategy --race bahrain --lap 18 --driver VER --type optimal`
-- `hannah` and then typing a message in the TUI
-
-For direct commands, `app.py` turns the command into a natural-language request and calls `AgentLoop().run_command(...)`.
-
-For chat mode, `chat.py` creates a session-aware memory adapter and calls `AgentLoop(memory=SessionMemory(...)).run_turn(...)`.
-
-Important boundary:
-
-- slash commands like `/model`, `/providers`, `/configure`, `/sessions`, `/clear` are handled entirely inside `hannah/cli/chat.py`
-- they do not enter the LLM loop at all
+That keeps the old `AgentLoop.run_turn(...)` and `AgentLoop.run_command(...)` API stable while moving actual runtime behavior into `RuntimeCore`.
 
 ---
 
-## Step 2: Loop Construction
+## Tool Surface
 
-`AgentLoop.__init__()` in `hannah/agent/loop.py` does four things:
+`ToolRegistry` still discovers the regular tool modules under `hannah/tools/*/tool.py`, but the main-agent runtime surface now also includes a runtime-bound `spawn` tool.
 
-1. loads config with `load_config()`
-2. creates a memory backend
-3. loads tool specs from `ToolRegistry`
-4. resolves the provider from `ProviderRegistry`
+Main-agent turns can see:
 
-That gives the loop a stable runtime surface:
+- domain tools such as `race_data`, `race_sim`, `pit_strategy`, `predict_winner`, and `train_model`
+- runtime-bound `spawn`, which is injected by `RuntimeCore` through `ToolRegistry.with_runtime_tools(...)`
 
-- `self.memory`
-- `self.tools`
-- `self.provider`
-
-The provider seam stays thin on purpose. `ProviderRegistry` currently resolves to `LiteLLMProvider`, which means Hannah can use:
-
-- a hosted provider like OpenAI/Claude/Gemini through LiteLLM
-- a local OpenAI-compatible endpoint through `HANNAH_RLM_API_BASE`
-- deterministic offline fallback if no external model is usable
+Worker turns do not get the full main-agent tool surface. `WorkerRuntime` builds a restricted registry from the parent registry and the worker's allowlist.
 
 ---
 
-## Step 3: Message Assembly
+## Worker Model
 
-`AgentLoop.run_turn(user_input)` builds the prompt in layers:
+Generic workers are described with structured `WorkerSpec` objects:
 
-1. Hannah system persona from `hannah/agent/persona.py`
-2. optional dynamic system guidance for this specific turn
-3. recent memory
-4. current user message
+- `worker_id`
+- `task`
+- `system_prompt`
+- `allowed_tools`
+- `result_contract`
 
-The dynamic guidance matters. Hannah now adjusts the turn shape before the first provider call.
+`allowed_tools` is the hard boundary for worker execution. Workers only receive the explicitly allowed subset of tools.
 
-Example:
+Slice 1 policy:
 
-- if the user asks for upcoming-race strategy analysis, Hannah hides `train_model` from the turn and injects guidance telling the model to use analysis tools instead
+- nested spawn is disallowed
+- any worker spec that includes `spawn` in `allowed_tools` is rejected before the worker runs
+- the parent turn receives a normal tool-error payload for that failed spawn call instead of crashing the whole turn
 
-That prevents the hosted model from inventing bogus training flows for questions that should be solved with `race_data`, `race_sim`, or `pit_strategy`.
-
----
-
-## Step 4: Tool Selection Per Turn
-
-The full tool list comes from `ToolRegistry.get_tool_specs()`, which discovers each `hannah/tools/*/tool.py` module and exports its schema.
-
-Current core tools are:
-
-- `race_data`
-- `race_sim`
-- `pit_strategy`
-- `predict_winner`
-- `train_model`
-
-Before the provider call, `AgentLoop` can reduce that list for the current turn.
-
-Current special rule:
-
-- if the prompt looks like race analysis rather than explicit retraining, `train_model` is removed from the available tools for that turn
-
-This is a product guardrail, not just a prompt hint.
+This keeps worker execution depth-1 and preserves containment.
 
 ---
 
-## Step 5: Provider Call
+## End-To-End Turn Flow
 
-`LiteLLMProvider.complete(...)` is the provider boundary.
+For the primary runtime path:
 
-The decision tree is:
+1. `hannah/cli/app.py` dispatches to `hannah/cli/agent_command.py`
+2. `agent_command.py` chooses one-shot or interactive execution
+3. `chat.py` or the one-shot path creates memory/session context
+4. `AgentLoop` builds the main prompt and turn-specific tool list
+5. `RuntimeCore` emits `user_message_received`
+6. `RuntimeCore` calls the provider
+7. if the provider returns tool calls, `RuntimeCore` normalizes arguments and executes them
+8. if the tool is `spawn`, `WorkerRuntime` runs a bounded worker turn through another `RuntimeCore`
+9. tool results and worker results are reinjected into the parent turn
+10. `RuntimeCore` emits `final_answer_emitted`
+11. `AgentLoop` persists the user/assistant messages
 
-1. if `HANNAH_FORCE_LOCAL_PROVIDER=1`, use deterministic local fallback
-2. else import `litellm`
-3. if no matching hosted credentials are available, use local fallback
-4. if `HANNAH_RLM_API_BASE` is set, point LiteLLM at the local OpenAI-compatible endpoint
-5. otherwise call the hosted model configured in `HANNAH_MODEL`
-
-Before the hosted call, the provider:
-
-- suppresses LiteLLM debug noise
-- sanitizes messages to the keys the provider path expects
-- passes tool schemas with `tool_choice="auto"` when tools are available
-
-If the hosted call throws, Hannah falls back locally instead of crashing the whole turn.
+The LLM still orchestrates. The domain tools still own simulation, telemetry, prediction, and strategy computation.
 
 ---
 
-## Step 6: Response Coercion
+## Runtime Events
 
-Provider responses can come back in slightly different shapes.
+The event contract is fixed in `hannah/runtime/events.py`.
 
-`AgentLoop` normalizes them into internal adapters:
+Core event names:
 
-- `_MessageAdapter`
-- `_ToolCallAdapter`
-- `_FunctionAdapter`
+- `user_message_received`
+- `provider_request_started`
+- `provider_response_received`
+- `tool_call_started`
+- `tool_call_finished`
+- `subagent_spawned`
+- `subagent_progress`
+- `subagent_completed`
+- `final_answer_emitted`
+- `error_emitted`
 
-That keeps the rest of the loop stable whether the response came from:
+The worker-facing naming contract is the `subagent_*` family:
 
-- LiteLLM hosted output
-- dict-like provider payloads
-- the deterministic local fallback planner
+- `subagent_spawned`
+- `subagent_progress`
+- `subagent_completed`
 
----
-
-## Step 7: Tool Execution
-
-If the assistant response contains tool calls, Hannah:
-
-1. logs each tool name to the terminal
-2. appends the assistant tool-call message to the running message list
-3. executes all tool calls concurrently with `asyncio.gather(...)`
-4. converts each tool result into a `role="tool"` message
-5. sends the expanded conversation back through the provider
-
-Tool execution is strict at the boundary:
-
-- raw tool arguments are parsed from JSON or dict form
-- `ToolRegistry.normalize_args(...)` validates and normalizes them
-- tool-specific normalizers can run before schema validation
-- unsupported extra args are dropped
-- missing required args raise a clear error
-
-That is the seam that prevents noisy hosted-model tool calls from corrupting the runtime.
+Those names are the compatibility contract for slice 1. They are what the CLI formatter, acceptance tests, and session event persistence layer consume.
 
 ---
 
-## Step 8: Tool Result Serialization
+## Streaming And JSONL Persistence
 
-Tool results are not blindly dumped back into the prompt.
+Runtime events are not just internal tracing.
 
-`AgentLoop` serializes them with two important guards:
+- `hannah/cli/chat.py` subscribes to the runtime event bus
+- `hannah/cli/format.py` renders the `subagent_*` events as streamed terminal output
+- `hannah/session/manager.py` persists every runtime event as a JSONL event record through `hannah/session/event_records.py`
 
-1. non-JSON-native values are stringified safely
-2. oversized tool payloads are compacted before being sent back to the model
+That means the same runtime event stream drives:
 
-Special case:
+- live subagent activity in the terminal
+- durable event history in session files
 
-- `race_data` payloads are summarized when they get too large, so the model sees session info, driver list, and telemetry counts instead of a huge raw dump
-
-This matters because race data can be large enough to waste context or break hosted follow-up passes.
-
----
-
-## Step 9: Retry On Permission-Seeking Deferrals
-
-Some hosted models answer ambiguous prompts with a useless conversational deferral:
-
-> I can analyze that. Let me know if you'd like me to proceed.
-
-That is not acceptable for Hannah.
-
-`AgentLoop` now detects that pattern for race-analysis turns. If the model tries to defer instead of acting:
-
-1. Hannah appends the assistant deferral to the message history
-2. Hannah injects a one-time system correction
-3. the same turn is sent back through the provider again
-
-The retry instruction says, in effect:
-
-- the user already asked for the analysis
-- do not ask for permission
-- call the tools now and answer decisively
-
-This is how the hosted path was hardened against vague prompts like:
-
-- “can model the 2026 make ai models to predict the race strategy for the upcoming Japanese Grand Prix?”
+The slice 1 acceptance contract depends on that shared event stream, including stable ordering for `subagent_spawned -> subagent_progress -> subagent_progress -> subagent_completed`.
 
 ---
 
-## Step 10: Final Answer And Memory Persistence
+## Failure Boundaries
 
-When the assistant returns final text without tool calls:
+The runtime keeps turns alive when possible.
 
-1. the user message is written to memory
-2. the assistant message is written to memory
-3. the text is returned to the caller
+- malformed tool args are normalized or rejected at the boundary
+- tool failures are serialized back into tool messages instead of crashing the turn
+- disallowed nested spawn returns a structured spawn-tool error
+- provider failures emit `error_emitted` and can be handled by the provider seam or caller
 
-Memory backend depends on the entry path:
-
-- normal CLI runs use `Memory` in `hannah/agent/memory.py` with SQLite
-- TUI chat uses `SessionMemory` in `hannah/session/manager.py` with JSONL session files
-
-This means the loop code itself does not care whether the caller is:
-
-- a one-shot CLI command
-- a persistent chat session
-
-It only depends on the shared `add(...)` and `get_recent(...)` memory interface.
+This is the intended slice 1 behavior: bounded workers, explicit runtime events, and compatibility surfaces over one shared runtime core.
 
 ---
 
-## Example: Strategy Question In Chat Mode
+## Reading Order
 
-A real strategy-style turn in the TUI looks like this:
-
-1. user types a freeform question into `hannah`
-2. `chat.py` loads the active JSONL session and wraps it as `SessionMemory`
-3. `AgentLoop.run_turn(...)` builds the prompt
-4. if the question is race analysis, `train_model` is removed from this turn
-5. the provider gets the message stack and allowed tool list
-6. the model calls tools such as `race_data`, `race_sim`, and `pit_strategy`
-7. Hannah executes those tools and appends their outputs
-8. the provider synthesizes a final strategist answer
-9. the session file is updated with both the user turn and the assistant reply
-10. the TUI renders the answer panel
-
----
-
-## What The LLM Does Not Own
-
-These boundaries are intentional:
-
-- the LLM does not simulate the race directly
-- the LLM does not invent telemetry as a substitute for `race_data`
-- the LLM does not own artifact training logic
-- the optional runtime helper is not part of the main default loop
-
-The loop is an orchestrator. The tools own the domain work.
-
----
-
-## Failure Behavior
-
-The loop is built to keep the turn alive when possible.
-
-### No hosted model credentials
-
-- Hannah falls back to deterministic local planning
-
-### Hosted provider throws
-
-- Hannah falls back locally rather than crashing the CLI
-
-### Tool call is malformed
-
-- argument normalization catches it before the tool body runs
-
-### Tool body raises
-
-- the error is wrapped into a tool message and the model gets a chance to recover inside the same turn
-
-### Live data is incomplete
-
-- `race_data` and the simulation path still return shaped payloads so the turn can continue
-
----
-
-## Practical Reading Order
-
-If you want to trace the loop in code, read files in this order:
+Read these files in order if you need to trace the current architecture:
 
 1. `hannah/cli/app.py`
-2. `hannah/cli/chat.py`
-3. `hannah/agent/loop.py`
-4. `hannah/providers/litellm_provider.py`
-5. `hannah/agent/tool_registry.py`
-6. `hannah/tools/race_data/tool.py`
-7. `hannah/tools/race_sim/tool.py`
-8. `hannah/tools/pit_strategy/tool.py`
-9. `hannah/tools/predict_winner/tool.py`
-10. `hannah/tools/train_model/tool.py`
-
-That path shows the real runtime sequence without getting lost in training or simulation internals too early.
+2. `hannah/cli/agent_command.py`
+3. `hannah/cli/chat.py`
+4. `hannah/agent/loop.py`
+5. `hannah/runtime/core.py`
+6. `hannah/agent/worker_runtime.py`
+7. `hannah/agent/tool_registry.py`
+8. `hannah/session/manager.py`
+9. `hannah/session/event_records.py`

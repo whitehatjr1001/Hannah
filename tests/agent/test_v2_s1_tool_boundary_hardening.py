@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -12,6 +13,8 @@ import pytest
 
 import hannah.agent.loop as agent_loop
 from hannah.agent.loop import AgentLoop
+from hannah.agent.tool_registry import normalize_tool_args
+from hannah.agent.worker_runtime import SPAWN_TOOL_SPEC
 
 
 @dataclass
@@ -127,6 +130,99 @@ class _DictPayloadProvider:
         return {"choices": [{"message": {"role": "assistant", "content": "Tool pass complete."}}]}
 
 
+class _RuntimeAwareRegistry:
+    def __init__(self, handlers: dict[str, Any] | None = None) -> None:
+        self._handlers = handlers or {}
+
+    def get_tool_specs(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "spawn",
+                    "description": "Spawn a bounded worker.",
+                    "parameters": dict(SPAWN_TOOL_SPEC["parameters"]),
+                },
+            }
+        ]
+
+    def with_runtime_tools(self, handlers: dict[str, Any]) -> "_RuntimeAwareRegistry":
+        return _RuntimeAwareRegistry(handlers=dict(handlers))
+
+    def normalize_args(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        assert name == "spawn"
+        return normalize_tool_args(name, args, parameters=SPAWN_TOOL_SPEC["parameters"])
+
+    async def call(self, name: str, args: dict[str, Any], *, state: Any = None) -> dict[str, Any]:
+        handler = self._handlers[name]
+        if "state" in inspect.signature(handler).parameters:
+            result = handler(**args, state=state)
+        else:
+            result = handler(**args)
+        if inspect.isawaitable(result):
+            return await result
+        return result
+
+
+class _NestedSpawnProvider:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def complete(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        temperature: float,
+        max_tokens: int,
+    ) -> dict[str, Any]:
+        snapshot = json.loads(json.dumps(messages))
+        self.calls.append(
+            {
+                "messages": snapshot,
+                "tools": tools,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+        )
+        if len(self.calls) == 1:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "spawn-nested",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "spawn",
+                                        "arguments": {
+                                            "task": "delegate Bahrain strategy",
+                                            "system_prompt": "You are a planner worker.",
+                                            "allowed_tools": ["spawn"],
+                                            "result_contract": {"summary": "string"},
+                                        },
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "Main runtime recovered after blocked nested spawn.",
+                    }
+                }
+            ]
+        }
+
+
 def _make_tool_call(name: str, arguments: Any, call_id: str = "call-1") -> SimpleNamespace:
     return SimpleNamespace(
         id=call_id,
@@ -212,3 +308,31 @@ def test_run_command_normalizes_dict_style_tool_payloads_for_content_and_argumen
         for tool_call in assistant_tool_msg["tool_calls"]
     )
 
+
+def test_run_turn_contains_nested_spawn_policy_error_without_reinjecting_subagent_result() -> None:
+    provider = _NestedSpawnProvider()
+    loop = AgentLoop(
+        memory=_StubMemory(),
+        registry=_RuntimeAwareRegistry(),
+        provider=provider,
+    )
+
+    final_text = asyncio.run(loop.run_turn("delegate Bahrain strategy"))
+
+    assert final_text == "Main runtime recovered after blocked nested spawn."
+
+    second_pass_messages = provider.calls[1]["messages"]
+    spawn_tool_message = next(
+        message
+        for message in second_pass_messages
+        if message.get("role") == "tool" and message.get("name") == "spawn"
+    )
+    payload = json.loads(spawn_tool_message["content"])
+
+    assert payload["status"] == "error"
+    assert payload["tool"] == "spawn"
+    assert "nested spawn is not allowed in slice 1" in payload["error"]
+    assert not any(
+        message.get("role") == "system" and message.get("name") == "subagent_result"
+        for message in second_pass_messages
+    )
