@@ -134,6 +134,7 @@ def simulate(race: str, year: int, driver: str | None, laps: int, weather: str) 
             interactive=False,
             session_id="cli:direct",
             new_session=False,
+            persist_session=False,
         )
     )
 
@@ -209,6 +210,7 @@ def predict(race: str, year: int) -> None:
             interactive=False,
             session_id="cli:direct",
             new_session=False,
+            persist_session=False,
         )
     )
 
@@ -236,6 +238,7 @@ def strategy(race: str, lap: int, driver: str, strategy_type: str) -> None:
             interactive=False,
             session_id="cli:direct",
             new_session=False,
+            persist_session=False,
         )
     )
 
@@ -296,6 +299,7 @@ def ask(question: str) -> None:
             interactive=False,
             session_id="cli:direct",
             new_session=False,
+            persist_session=False,
         )
     )
 
@@ -312,6 +316,7 @@ def agent(message: str | None, session_id: str, new_session: bool) -> None:
             interactive=message is None,
             session_id=session_id,
             new_session=new_session,
+            persist_session=True,
         )
     )
 
@@ -328,6 +333,7 @@ def chat(message: str | None, session_id: str, new_session: bool) -> None:
             interactive=message is None,
             session_id=session_id,
             new_session=new_session,
+            persist_session=True,
         )
     )
 

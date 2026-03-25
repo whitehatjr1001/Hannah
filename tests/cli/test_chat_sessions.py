@@ -50,7 +50,7 @@ def test_chat_message_mode_persists_session_history(tmp_path, monkeypatch) -> No
 
 def test_chat_message_mode_routes_through_shared_agent_command(monkeypatch) -> None:
     runner = CliRunner()
-    seen: list[tuple[str | None, bool, str, bool]] = []
+    seen: list[tuple[str | None, bool, str, bool, bool]] = []
 
     async def fake_run_agent_command(
         message: str | None,
@@ -58,8 +58,9 @@ def test_chat_message_mode_routes_through_shared_agent_command(monkeypatch) -> N
         interactive: bool,
         session_id: str,
         new_session: bool,
+        persist_session: bool,
     ) -> str:
-        seen.append((message, interactive, session_id, new_session))
+        seen.append((message, interactive, session_id, new_session, persist_session))
         return "ok"
 
     monkeypatch.setattr(agent_command_module, "run_agent_command", fake_run_agent_command)
@@ -70,7 +71,7 @@ def test_chat_message_mode_routes_through_shared_agent_command(monkeypatch) -> N
     )
 
     assert result.exit_code == 0
-    assert seen == [("session prompt", False, "cli:shared", True)]
+    assert seen == [("session prompt", False, "cli:shared", True, True)]
 
 
 def test_sessions_command_lists_saved_sessions(tmp_path, monkeypatch) -> None:
