@@ -6,7 +6,7 @@ Redesign Hannah from a command-shaped F1 CLI into an agent-first CLI runtime mod
 
 ## Goals
 
-- Make `hannah agent` the primary interactive and one-shot entrypoint.
+- Make `hannah agent` the primary runtime entrypoint for both interactive and one-shot use.
 - Let the main agent choose among F1 tools instead of routing users through prompt-shaped commands.
 - Add generic runtime-spawned subagents with custom prompts and restricted toolsets.
 - Stream tool and subagent activity live in the CLI.
@@ -49,6 +49,15 @@ At minimum the bus should support:
 
 These events are the source of truth for CLI streaming and persisted session traces.
 
+Each event should include a minimal shared envelope:
+
+- `event_type`
+- `timestamp`
+- `session_id`
+- `message_id`
+- `worker_id` when the event relates to a spawned worker
+- `payload` for event-specific fields
+
 ## Tools and Skills
 
 The main agent receives a tool surface composed of:
@@ -63,6 +72,8 @@ Workspace guidance and skill summaries should be loaded into runtime context so 
 - the available tools
 - the repo-specific architectural constraints
 - the expectation that domain work happens in tools, not in freeform model reasoning
+
+In the first version, this should be static runtime-provided context assembled at turn start rather than a new dynamic retrieval subsystem.
 
 ## Subagent Model
 
@@ -81,7 +92,7 @@ This lets the main agent create workers such as telemetry fetchers, strategy ana
 
 - Subagents run the same provider/tool loop shape as the main agent.
 - Each subagent gets a reduced toolset.
-- Recursive orchestration must be bounded. Subagents should not become unbounded planners with unrestricted nested spawning.
+- Recursive orchestration is disabled in the first version. Subagents cannot call `spawn`; only the main agent may spawn workers. This caps spawn depth at 1.
 - Subagent output returns to the main runtime through structured events so the user can see progress and the main agent can incorporate results.
 
 ## Streaming UX
@@ -119,15 +130,22 @@ This enables continuity across investigations, replayable decision history, and 
 
 ## CLI Surface
 
-`hannah agent` becomes the primary interactive mode.
+`hannah agent` becomes the primary runtime surface.
 
 Entry surface expectations:
 
-- `hannah agent` for interactive runtime use
-- `hannah ask` as a one-shot alias into the same runtime
+- `hannah agent` with no prompt opens the interactive runtime
+- `hannah agent "<prompt>"` runs a one-shot task through the same runtime
+- `hannah ask "<prompt>"` remains as a backward-compatible one-shot alias into the same runtime
 - `simulate`, `predict`, `strategy`, and related commands remain as convenience wrappers
 
 The wrappers should submit structured intent into the agent runtime and render the same streamed event output. There should be one architecture underneath, not separate execution models.
+
+Examples:
+
+- `hannah agent`
+- `hannah agent "Compare two-stop versus one-stop for Bahrain from lap 18"`
+- `hannah ask "Who is the likely winner at Monza given qualifying pace and recent long-run data?"`
 
 ## Safety and Boundaries
 
