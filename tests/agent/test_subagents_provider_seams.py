@@ -9,6 +9,7 @@ import pytest
 
 import hannah.agent.subagents as subagents
 from hannah.agent.context import RaceContext
+from hannah.agent.worker_runtime import WorkerSpec
 from hannah.config.loader import load_config
 from hannah.providers.litellm_provider import LiteLLMProvider
 from hannah.providers.registry import ProviderRegistry
@@ -96,3 +97,27 @@ def test_provider_registry_returns_litellm_provider_instance() -> None:
     config = load_config(path=Path("/Users/deepedge/Desktop/projects/files/config.yaml"))
     provider = ProviderRegistry.from_config(config)
     assert isinstance(provider, LiteLLMProvider)
+
+
+def test_build_legacy_worker_specs_maps_fixed_roster_to_bounded_specs() -> None:
+    ctx = RaceContext(
+        race="bahrain",
+        year=2025,
+        laps=57,
+        weather="dry",
+        drivers=["VER", "NOR", "LEC"],
+        race_data={"session_info": {"current_lap": 20}},
+    )
+
+    specs = subagents.build_legacy_worker_specs(ctx)
+
+    assert all(isinstance(spec, WorkerSpec) for spec in specs)
+    assert [spec.worker_id for spec in specs] == [
+        "sim_agent",
+        "strategy_agent",
+        "predict_agent",
+        "rival_nor",
+        "rival_lec",
+    ]
+    assert all(spec.allowed_tools for spec in specs)
+    assert all("spawn" not in spec.allowed_tools for spec in specs)

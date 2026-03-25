@@ -9,6 +9,8 @@ from typing import Any
 
 from hannah.agent.context import RaceContext
 from hannah.agent.prompts import build_strategy_prompt
+from hannah.agent.worker_registry import build_legacy_worker_specs as _build_legacy_worker_specs
+from hannah.agent.worker_runtime import WorkerSpec
 from hannah.config.loader import load_config
 from hannah.models.train_pit_q import ARTIFACT_PATH as PIT_POLICY_Q_ARTIFACT_PATH
 from hannah.models.train_pit_q import choose_action as choose_q_policy_action
@@ -193,6 +195,11 @@ class RivalAgent(BaseSubAgent):
             )
         except Exception as err:
             return SubAgentResult(agent=self.name, success=False, error=str(err))
+
+
+def build_legacy_worker_specs(ctx: RaceContext) -> list[WorkerSpec]:
+    """Compatibility shim exposing the fixed F1 worker roster as generic specs."""
+    return _build_legacy_worker_specs(ctx)
 
 
 async def spawn_all(ctx: RaceContext) -> dict[str, dict]:

@@ -11,6 +11,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable
 
+from hannah.agent.worker_runtime import SPAWN_TOOL_SPEC
 from hannah.utils.console import Console, Table
 
 console = Console()
@@ -19,6 +20,7 @@ _REQUIRED_PARAM_KINDS = {
     inspect.Parameter.POSITIONAL_OR_KEYWORD,
     inspect.Parameter.KEYWORD_ONLY,
 }
+_CONTEXT_ONLY_PARAMS = {"state"}
 
 
 @dataclass(frozen=True)
@@ -26,10 +28,10 @@ class RegisteredTool:
     name: str
     description: str
     module_name: str
-    module: ModuleType
+    module: ModuleType | None
     parameters: dict[str, Any]
-    run_fn: Callable[..., Any]
-    signature: inspect.Signature
+    run_fn: Callable[..., Any] | None
+    signature: inspect.Signature | None
 
 
 def normalize_tool_args(
@@ -325,7 +327,26 @@ class ToolRegistry:
                 run_fn=run_fn,
                 signature=inspect.signature(run_fn),
             )
+        for runtime_tool in self._runtime_placeholders().values():
+            tools[runtime_tool.name] = runtime_tool
         return tools
+
+    def _runtime_placeholders(self) -> dict[str, RegisteredTool]:
+        spec = SPAWN_TOOL_SPEC
+        parameters = spec.get("parameters", {"type": "object", "properties": {}})
+        if not isinstance(parameters, dict):
+            parameters = {"type": "object", "properties": {}}
+        return {
+            str(spec["name"]): RegisteredTool(
+                name=str(spec["name"]),
+                description=str(spec.get("description", "")),
+                module_name="runtime.spawn",
+                module=None,
+                parameters=parameters,
+                run_fn=None,
+                signature=None,
+            )
+        }
 
     def get_tool_specs(self) -> list[dict]:
         specs: list[dict] = []
@@ -345,29 +366,72 @@ class ToolRegistry:
             )
         return specs
 
+    def with_runtime_tools(self, handlers: dict[str, object]) -> "ToolRegistry":
+        tools = dict(self._tools)
+        for name, handler in handlers.items():
+            existing = tools.get(name)
+            if existing is None:
+                raise ValueError(f"unknown runtime tool: {name}")
+            if not callable(handler):
+                raise TypeError(f"runtime tool handler for {name} must be callable")
+            tools[name] = RegisteredTool(
+                name=existing.name,
+                description=existing.description,
+                module_name=existing.module_name,
+                module=existing.module,
+                parameters=deepcopy(existing.parameters),
+                run_fn=handler,
+                signature=inspect.signature(handler),
+            )
+        return self._clone_with_tools(tools)
+
+    def subset(self, allowed_names: list[str] | set[str]) -> "ToolRegistry":
+        allowed = set(allowed_names)
+        return self._clone_with_tools(
+            {
+                name: tool
+                for name, tool in self._tools.items()
+                if name in allowed
+            }
+        )
+
+    def _clone_with_tools(self, tools: dict[str, RegisteredTool]) -> "ToolRegistry":
+        clone = object.__new__(ToolRegistry)
+        clone.tools_dir = self.tools_dir
+        clone._tools = tools
+        return clone
+
     def normalize_args(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         tool = self._tools.get(name)
         if tool is None:
             raise ValueError(f"unknown tool: {name}")
         normalized_input = args
-        normalizer = getattr(tool.module, "normalize_args", None)
+        normalizer = getattr(tool.module, "normalize_args", None) if tool.module is not None else None
         if callable(normalizer) and isinstance(args, dict):
             normalized_input = normalizer(dict(args))
             if not isinstance(normalized_input, dict):
                 raise TypeError(f"tool {name} normalize_args returned {type(normalized_input).__name__}, expected dict")
-        return normalize_tool_args(
+        normalized = normalize_tool_args(
             name,
             normalized_input,
             parameters=tool.parameters,
             signature=tool.signature,
         )
+        for key in _CONTEXT_ONLY_PARAMS:
+            normalized.pop(key, None)
+        return normalized
 
-    async def call(self, name: str, args: dict) -> dict:
+    async def call(self, name: str, args: dict, *, state: Any = None) -> dict:
         tool = self._tools.get(name)
         if tool is None:
             raise ValueError(f"unknown tool: {name}")
+        if tool.run_fn is None:
+            raise ValueError(f"runtime tool not bound: {name}")
         normalized_args = self.normalize_args(name, args)
-        result = tool.run_fn(**normalized_args)
+        call_args = dict(normalized_args)
+        if tool.signature is not None and "state" in tool.signature.parameters:
+            call_args["state"] = state
+        result = tool.run_fn(**call_args)
         if inspect.isawaitable(result):
             resolved = await result
         else:

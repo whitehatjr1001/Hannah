@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
@@ -70,6 +71,7 @@ class RuntimeCore:
         temperature: float = 0.2,
         max_tokens: int = 2048,
         console: Console | None = None,
+        allow_spawn_tool: bool = True,
     ) -> None:
         self.provider = provider
         self.registry = registry
@@ -79,6 +81,22 @@ class RuntimeCore:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.console = console or Console()
+        self._worker_runtime: object | None = None
+        if allow_spawn_tool:
+            runtime_binding = getattr(self.registry, "with_runtime_tools", None)
+            if callable(runtime_binding):
+                from hannah.agent.worker_runtime import WorkerRuntime
+
+                self._worker_runtime = WorkerRuntime(
+                    provider=self.provider,
+                    registry=registry,
+                    event_bus=self.event_bus,
+                    context_builder=self.context_builder,
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens,
+                    console=self.console,
+                )
+                self.registry = runtime_binding({"spawn": self._handle_spawn_tool})
 
     async def run_turn(
         self,
@@ -254,8 +272,14 @@ class RuntimeCore:
             )
 
         try:
-            tool_caller = call_tool or self._call_tool
-            result = await tool_caller(tool_call)
+            if call_tool is None:
+                result = await self._call_tool(tool_call, state=state)
+            else:
+                result = await self._call_tool_with_optional_state(
+                    call_tool,
+                    tool_call,
+                    state=state,
+                )
         except Exception as exc:
             if state is not None:
                 await self._publish_event(
@@ -277,13 +301,71 @@ class RuntimeCore:
             )
         return result
 
-    async def _call_tool(self, tool_call: Any) -> dict[str, Any]:
+    async def _call_tool(self, tool_call: Any, *, state: TurnState | None = None) -> dict[str, Any]:
         raw_arguments = tool_call.function.arguments
         arguments = self._load_tool_arguments(raw_arguments)
         normalizer = getattr(self.registry, "normalize_args", None)
         if callable(normalizer):
             arguments = normalizer(tool_call.function.name, arguments)
-        return await self.registry.call(tool_call.function.name, arguments)
+        return await self._call_registry(tool_call.function.name, arguments, state=state)
+
+    async def _call_registry(
+        self,
+        name: str,
+        args: dict[str, Any],
+        *,
+        state: TurnState | None = None,
+    ) -> dict[str, Any]:
+        registry_call = getattr(self.registry, "call")
+        if "state" in inspect.signature(registry_call).parameters:
+            result = registry_call(name, args, state=state)
+        else:
+            result = registry_call(name, args)
+        if inspect.isawaitable(result):
+            return await result
+        return result
+
+    async def _call_tool_with_optional_state(
+        self,
+        tool_caller: ToolCaller,
+        tool_call: Any,
+        *,
+        state: TurnState | None = None,
+    ) -> dict[str, Any]:
+        if "state" in inspect.signature(tool_caller).parameters:
+            result = tool_caller(tool_call, state=state)
+        else:
+            result = tool_caller(tool_call)
+        if inspect.isawaitable(result):
+            return await result
+        return result
+
+    async def _handle_spawn_tool(
+        self,
+        task: str,
+        system_prompt: str,
+        allowed_tools: list[str],
+        result_contract: dict[str, Any],
+        *,
+        state: TurnState | None = None,
+    ) -> dict[str, Any]:
+        if self._worker_runtime is None:
+            raise ValueError("spawn tool is not available")
+
+        from hannah.agent.worker_runtime import WorkerSpec, make_worker_id
+
+        spec = WorkerSpec(
+            worker_id=make_worker_id("worker"),
+            task=task,
+            system_prompt=system_prompt,
+            allowed_tools=list(allowed_tools),
+            result_contract=dict(result_contract),
+        )
+        parent_session_id = state.session_id if state is not None else "default"
+        return await self._worker_runtime.run_worker(
+            spec,
+            parent_session_id=parent_session_id,
+        )
 
     def _serialize_tool_message(self, payload: Any, *, tool_name: str) -> str:
         if isinstance(payload, str):

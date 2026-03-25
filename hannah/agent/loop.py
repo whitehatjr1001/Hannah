@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import re
 from typing import Any
 
@@ -65,7 +66,6 @@ class AgentLoop:
         self.config = load_config()
         self.memory = memory or Memory()
         self.registry = registry or ToolRegistry()
-        self.tools = self.registry.get_tool_specs()
         self.provider = provider or ProviderRegistry.from_config(self.config)
         self.event_bus = AsyncEventBus()
         self.context_builder = RuntimeContextBuilder()
@@ -79,6 +79,8 @@ class AgentLoop:
             max_tokens=self.config.agent.max_tokens,
             console=console,
         )
+        self.registry = self.runtime.registry
+        self.tools = self.registry.get_tool_specs()
 
     async def run_turn(self, user_input: str) -> str:
         turn_tools = self._select_tools_for_turn(user_input)
@@ -189,7 +191,7 @@ class AgentLoop:
     def _record_count(self, value: Any) -> int:
         return self.runtime._record_count(value)
 
-    async def _call_tool(self, tool_call) -> dict:
+    async def _call_tool(self, tool_call, *, state: Any = None) -> dict:
         raw_arguments = tool_call.function.arguments
         arguments = self._load_tool_arguments(raw_arguments)
         normalizer = getattr(self.registry, "normalize_args", None)
@@ -197,7 +199,14 @@ class AgentLoop:
             arguments = normalizer(tool_call.function.name, arguments)
         else:
             arguments = self._normalize_tool_args_from_specs(tool_call.function.name, arguments)
-        return await self.registry.call(tool_call.function.name, arguments)
+        registry_call = getattr(self.registry, "call")
+        if "state" in inspect.signature(registry_call).parameters:
+            result = registry_call(tool_call.function.name, arguments, state=state)
+        else:
+            result = registry_call(tool_call.function.name, arguments)
+        if inspect.isawaitable(result):
+            return await result
+        return result
 
     def _load_tool_arguments(self, raw_arguments: Any) -> dict[str, Any]:
         return self.runtime._load_tool_arguments(raw_arguments)

@@ -95,6 +95,7 @@ def test_strategy_analysis_turn_hides_train_model_and_injects_guidance() -> None
     system_messages = [message["content"] for message in first_call["messages"] if message["role"] == "system"]
 
     assert "train_model" not in tool_names
+    assert "spawn" in tool_names
     assert any("Do not call train_model" in message for message in system_messages)
 
 
@@ -109,6 +110,7 @@ def test_explicit_training_turn_keeps_train_model_available() -> None:
     system_messages = [message["content"] for message in first_call["messages"] if message["role"] == "system"]
 
     assert "train_model" in tool_names
+    assert "spawn" in tool_names
     assert all("Do not call train_model" not in message for message in system_messages)
 
 
