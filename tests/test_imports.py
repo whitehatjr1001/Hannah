@@ -2,7 +2,9 @@
 
 from hannah.agent.memory import Memory
 from hannah.agent.tool_registry import ToolRegistry
+from hannah.cli.agent_command import run_agent_command
 from hannah.cli.app import cli
+from hannah.cli.command_prompts import build_simulate_intent
 from hannah.models.train_winner import load_and_predict
 
 
@@ -31,3 +33,13 @@ def test_cli_object_exists() -> None:
 def test_cli_trace_command_exists() -> None:
     assert hasattr(cli, "commands")
     assert "trace" in cli.commands
+
+
+def test_cli_agent_command_exists() -> None:
+    assert hasattr(cli, "commands")
+    assert "agent" in cli.commands
+
+
+def test_primary_cli_helpers_are_importable() -> None:
+    assert callable(run_agent_command)
+    assert callable(build_simulate_intent)

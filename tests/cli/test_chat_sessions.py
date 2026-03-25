@@ -6,6 +6,7 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
+import hannah.cli.agent_command as agent_command_module
 import hannah.cli.app as app_module
 import hannah.cli.chat as chat_module
 from hannah.session.manager import SessionManager
@@ -28,8 +29,8 @@ class _FakeAgentLoop:
 
 def test_chat_message_mode_persists_session_history(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("HANNAH_SESSION_DIR", str(tmp_path))
-    monkeypatch.setattr(app_module, "AgentLoop", _FakeAgentLoop)
-    monkeypatch.setattr(app_module, "make_hannah_panel", lambda text: text)
+    monkeypatch.setattr(agent_command_module, "AgentLoop", _FakeAgentLoop)
+    monkeypatch.setattr(agent_command_module, "make_hannah_panel", lambda text: text)
 
     runner = CliRunner()
     first = runner.invoke(app_module.cli, ["chat", "--message", "first turn", "--session", "cli:test"])
@@ -45,6 +46,31 @@ def test_chat_message_mode_persists_session_history(tmp_path, monkeypatch) -> No
         "second turn",
         "history=2",
     ]
+
+
+def test_chat_message_mode_routes_through_shared_agent_command(monkeypatch) -> None:
+    runner = CliRunner()
+    seen: list[tuple[str | None, bool, str, bool]] = []
+
+    async def fake_run_agent_command(
+        message: str | None,
+        *,
+        interactive: bool,
+        session_id: str,
+        new_session: bool,
+    ) -> str:
+        seen.append((message, interactive, session_id, new_session))
+        return "ok"
+
+    monkeypatch.setattr(agent_command_module, "run_agent_command", fake_run_agent_command)
+
+    result = runner.invoke(
+        app_module.cli,
+        ["chat", "--message", "session prompt", "--session", "cli:shared", "--new-session"],
+    )
+
+    assert result.exit_code == 0
+    assert seen == [("session prompt", False, "cli:shared", True)]
 
 
 def test_sessions_command_lists_saved_sessions(tmp_path, monkeypatch) -> None:

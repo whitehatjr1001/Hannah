@@ -63,9 +63,10 @@ except Exception:
     def load_dotenv() -> None:
         return None
 
-from hannah.agent.loop import AgentLoop
-from hannah.cli.chat import is_interactive_terminal, print_sessions, run_interactive_chat, run_message_chat
 from hannah.agent.tool_registry import ToolRegistry
+from hannah.cli import agent_command as agent_command_module
+from hannah.cli import command_prompts
+from hannah.cli.chat import is_interactive_terminal, print_sessions
 from hannah.cli.format import BANNER, format_trace_summary, make_hannah_panel
 from hannah.cli.provider_ui import (
     provider_choice,
@@ -80,7 +81,14 @@ console = Console()
 
 
 def _run_agent_command(command: str) -> None:
-    asyncio.run(AgentLoop().run_command(command))
+    asyncio.run(
+        agent_command_module.run_agent_command(
+            command,
+            interactive=False,
+            session_id="cli:direct",
+            new_session=False,
+        )
+    )
 
 
 def _parse_driver_codes(raw: str) -> list[str]:
@@ -106,7 +114,7 @@ def cli(ctx: click.Context) -> None:
     """Hannah Smith — F1 strategy simulation CLI agent."""
     if getattr(ctx, "invoked_subcommand", None) is None:
         if is_interactive_terminal():
-            ctx.invoke(chat)
+            ctx.invoke(agent)
             return
         console.print(BANNER)
         console.print("[dim]  Type [bold]hannah --help[/bold] to see all commands.[/dim]\n")
@@ -120,9 +128,19 @@ def cli(ctx: click.Context) -> None:
 @click.option("--weather", default="dry", type=click.Choice(["dry", "wet", "mixed"]))
 def simulate(race: str, year: int, driver: str | None, laps: int, weather: str) -> None:
     """Run a fast async race simulation."""
-    _run_agent_command(
-        f"Run a race simulation for {race} {year}. "
-        f"Driver: {driver or 'all'}. Laps: {laps}. Weather: {weather}."
+    asyncio.run(
+        agent_command_module.run_agent_command(
+            command_prompts.build_simulate_intent(
+                race=race,
+                year=year,
+                driver=driver,
+                laps=laps,
+                weather=weather,
+            ),
+            interactive=False,
+            session_id="cli:direct",
+            new_session=False,
+        )
     )
 
 
@@ -191,10 +209,13 @@ def trace_command(
 @click.option("--year", default=2025, help="Season year")
 def predict(race: str, year: int) -> None:
     """Predict the winner for an upcoming race."""
-    _run_agent_command(
-        f"Predict the winner for the {race} Grand Prix {year}. "
-        "Fetch current qualifying and historical data, run the winner ensemble model, "
-        "and give me the podium probabilities."
+    asyncio.run(
+        agent_command_module.run_agent_command(
+            command_prompts.build_predict_intent(race=race, year=year),
+            interactive=False,
+            session_id="cli:direct",
+            new_session=False,
+        )
     )
 
 
@@ -210,10 +231,18 @@ def predict(race: str, year: int) -> None:
 )
 def strategy(race: str, lap: int, driver: str, strategy_type: str) -> None:
     """Get a pit strategy call for the current race situation."""
-    _run_agent_command(
-        f"Strategy call for {driver} at {race}, lap {lap}. "
-        f"Strategy type requested: {strategy_type}. "
-        "Check tyre state, competitor positions, and give me a decisive call."
+    asyncio.run(
+        agent_command_module.run_agent_command(
+            command_prompts.build_strategy_intent(
+                race=race,
+                lap=lap,
+                driver=driver,
+                strategy_type=strategy_type,
+            ),
+            interactive=False,
+            session_id="cli:direct",
+            new_session=False,
+        )
     )
 
 
@@ -267,32 +296,45 @@ def train(model_name: str, years: str, races: str | None) -> None:
 @click.argument("question")
 def ask(question: str) -> None:
     """Ask Hannah a freeform strategy question."""
-    _run_agent_command(question)
+    asyncio.run(
+        agent_command_module.run_agent_command(
+            command_prompts.build_ask_intent(question),
+            interactive=False,
+            session_id="cli:direct",
+            new_session=False,
+        )
+    )
 
 
-@cli.command()
-@click.option("--message", "-m", default=None, help="Single message to send through the chat session path")
-@click.option("--session", "session_id", default="cli:direct", help="Chat session id to resume")
+@cli.command(name="agent")
+@click.option("--message", "-m", default=None, help="Single message to send through the shared agent runtime")
+@click.option("--session", "session_id", default="cli:direct", help="Session id to resume")
 @click.option("--new-session", is_flag=True, help="Create a fresh session id before sending the message")
-def chat(message: str | None, session_id: str, new_session: bool) -> None:
-    """Interactive nanobot-style chat mode with persistent sessions."""
-    if message is not None:
-        run_message_chat(
-            message=message,
-            console=console,
-            panel_renderer=make_hannah_panel,
-            agent_loop_cls=AgentLoop,
+def agent(message: str | None, session_id: str, new_session: bool) -> None:
+    """Primary shared runtime surface for one-shot and interactive agent turns."""
+    asyncio.run(
+        agent_command_module.run_agent_command(
+            message,
+            interactive=message is None,
             session_id=session_id,
             new_session=new_session,
         )
-        return
+    )
 
-    run_interactive_chat(
-        console=console,
-        panel_renderer=make_hannah_panel,
-        agent_loop_cls=AgentLoop,
-        session_id=session_id,
-        new_session=new_session,
+
+@cli.command()
+@click.option("--message", "-m", default=None, help="Single message to send through the chat compatibility path")
+@click.option("--session", "session_id", default="cli:direct", help="Chat session id to resume")
+@click.option("--new-session", is_flag=True, help="Create a fresh session id before sending the message")
+def chat(message: str | None, session_id: str, new_session: bool) -> None:
+    """Compatibility wrapper over the shared agent runtime."""
+    asyncio.run(
+        agent_command_module.run_agent_command(
+            message,
+            interactive=message is None,
+            session_id=session_id,
+            new_session=new_session,
+        )
     )
 
 

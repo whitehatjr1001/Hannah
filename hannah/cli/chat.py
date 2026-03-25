@@ -45,8 +45,28 @@ def run_interactive_chat(
     new_session: bool = False,
 ) -> None:
     """Run the interactive chat TUI on a real terminal."""
+    asyncio.run(
+        run_interactive_chat_session(
+            console=console,
+            panel_renderer=panel_renderer,
+            agent_loop_cls=agent_loop_cls,
+            session_id=session_id,
+            new_session=new_session,
+        )
+    )
+
+
+async def run_interactive_chat_session(
+    *,
+    console: Console,
+    panel_renderer: Callable[[str], Any],
+    agent_loop_cls: type,
+    session_id: str = "cli:direct",
+    new_session: bool = False,
+) -> None:
+    """Run the interactive chat TUI on the current event loop."""
     if not is_interactive_terminal():
-        console.print("[yellow]Interactive chat requires a TTY. Use `hannah chat --message ...` instead.[/yellow]")
+        console.print("[yellow]Interactive chat requires a TTY. Use `hannah agent --message ...` instead.[/yellow]")
         return
 
     manager = SessionManager()
@@ -81,13 +101,11 @@ def run_interactive_chat(
         if handled:
             continue
 
-        response = asyncio.run(
-            _run_chat_turn(
-                message=user_input,
-                session_id=active_session,
-                manager=manager,
-                agent_loop_cls=agent_loop_cls,
-            )
+        response = await _run_chat_turn(
+            message=user_input,
+            session_id=active_session,
+            manager=manager,
+            agent_loop_cls=agent_loop_cls,
         )
         console.print()
         console.print(panel_renderer(response))
@@ -104,20 +122,41 @@ def run_message_chat(
     new_session: bool = False,
 ) -> None:
     """Run a one-shot message through the chat-session path."""
+    asyncio.run(
+        run_message_chat_session(
+            message=message,
+            console=console,
+            panel_renderer=panel_renderer,
+            agent_loop_cls=agent_loop_cls,
+            session_id=session_id,
+            new_session=new_session,
+        )
+    )
+
+
+async def run_message_chat_session(
+    *,
+    message: str,
+    console: Console,
+    panel_renderer: Callable[[str], Any],
+    agent_loop_cls: type,
+    session_id: str = "cli:direct",
+    new_session: bool = False,
+) -> str:
+    """Run a one-shot message on the current event loop and render the reply."""
     manager = SessionManager()
     active_session = _resolve_session_id(session_id=session_id, new_session=new_session)
-    response = asyncio.run(
-        _run_chat_turn(
-            message=message,
-            session_id=active_session,
-            manager=manager,
-            agent_loop_cls=agent_loop_cls,
-        )
+    response = await _run_chat_turn(
+        message=message,
+        session_id=active_session,
+        manager=manager,
+        agent_loop_cls=agent_loop_cls,
     )
     _print_session_status(console=console, session_id=active_session)
     console.print()
     console.print(panel_renderer(response))
     console.print()
+    return response
 
 
 def print_sessions(*, console: Console, manager: SessionManager | None = None) -> None:
