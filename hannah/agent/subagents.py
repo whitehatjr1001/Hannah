@@ -9,6 +9,7 @@ from typing import Any
 
 from hannah.agent.context import RaceContext
 from hannah.agent.prompts import build_strategy_prompt
+from hannah.agent.subagent_manager import SubagentManager
 from hannah.agent.worker_registry import build_legacy_worker_specs as _build_legacy_worker_specs
 from hannah.agent.worker_runtime import WorkerSpec
 from hannah.config.loader import load_config
@@ -202,25 +203,27 @@ def build_legacy_worker_specs(ctx: RaceContext) -> list[WorkerSpec]:
     return _build_legacy_worker_specs(ctx)
 
 
-async def spawn_all(ctx: RaceContext) -> dict[str, dict]:
-    """Run all sub-agents concurrently and collect successful outputs."""
+def _build_default_subagents(ctx: RaceContext) -> list[BaseSubAgent]:
     rivals = [driver for driver in ctx.drivers[1:]]
-    console.print(f"  [dim]spawning {3 + len(rivals)} sub-agents concurrently...[/dim]")
-    results = await asyncio.gather(
-        SimAgent().run(ctx),
-        StrategyAgent().run(ctx),
-        PredictAgent().run(ctx),
-        *(RivalAgent(driver).run(ctx) for driver in rivals),
-        return_exceptions=True,
+    return [
+        SimAgent(),
+        StrategyAgent(),
+        PredictAgent(),
+        *(RivalAgent(driver) for driver in rivals),
+    ]
+
+
+async def spawn_all(
+    ctx: RaceContext,
+    *,
+    event_bus: object | None = None,
+    session_id: str = "default",
+    manager: SubagentManager | None = None,
+) -> dict[str, dict]:
+    """Run all sub-agents concurrently as background workers and collect outputs."""
+    manager = manager or SubagentManager(
+        event_bus=event_bus,
+        console=console,
+        session_id=session_id,
     )
-    output: dict[str, dict] = {}
-    for result in results:
-        if isinstance(result, Exception):
-            console.print(f"  [red]sub-agent error: {result}[/red]")
-            continue
-        if result.success:
-            console.print(f"  [green]✓ {result.agent}[/green]")
-            output[result.agent] = result.data
-        else:
-            console.print(f"  [yellow]⚠ {result.agent}: {result.error}[/yellow]")
-    return output
+    return await manager.run_all(ctx, _build_default_subagents(ctx))
