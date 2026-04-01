@@ -10,6 +10,7 @@ from hannah._data_.cache import JsonCache
 from hannah.utils.console import Console
 
 console = Console()
+_OPENF1_MIN_YEAR = 2022
 
 
 class OpenF1Client:
@@ -76,6 +77,10 @@ class OpenF1Client:
             return []
         self.cache.save(f"openf1_{endpoint}", params, payload)
         return payload
+
+
+def should_enrich_from_openf1(year: int) -> bool:
+    return year >= _OPENF1_MIN_YEAR
 
 
 def _meeting_matches(meeting: dict[str, Any], lookup: str) -> bool:

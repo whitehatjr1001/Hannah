@@ -13,6 +13,23 @@ from hannah.domain.teams import get_driver_codes, get_driver_info, get_primary_r
 from hannah.domain.tracks import TrackConfig, get_track
 
 
+def _resolved_roster(race_data: dict | None, fallback: list[str] | None = None) -> list[str]:
+    if isinstance(race_data, dict):
+        session_info = race_data.get("session_info", {})
+        roster = None
+        if isinstance(session_info, dict):
+            roster = session_info.get("resolved_roster")
+        if not roster:
+            roster = race_data.get("resolved_roster")
+        if not roster:
+            roster = race_data.get("drivers")
+        if isinstance(roster, (list, tuple)):
+            resolved = [str(driver) for driver in roster if str(driver)]
+            if resolved:
+                return resolved
+    return list(fallback or [])
+
+
 def _stable_seed(*parts: object) -> int:
     payload = "|".join(str(part) for part in parts).encode("utf-8")
     return int(hashlib.md5(payload).hexdigest()[:8], 16)
@@ -133,7 +150,12 @@ class RaceState:
 
     @classmethod
     def from_context(cls, ctx: RaceContext) -> "RaceState":
-        drivers = ctx.drivers or [ctx.drivers[0], *get_primary_rivals(ctx.drivers[0])] if ctx.drivers else get_driver_codes(3)
+        drivers = _resolved_roster(ctx.race_data, ctx.drivers)
+        if not drivers:
+            if ctx.drivers:
+                drivers = [ctx.drivers[0], *get_primary_rivals(ctx.drivers[0])]
+            else:
+                drivers = get_driver_codes(3)
         track = get_track(ctx.race, ctx.laps)
         return cls._build(
             race=ctx.race,
@@ -148,7 +170,7 @@ class RaceState:
     @classmethod
     def from_race_data(cls, race_data: dict) -> "RaceState":
         session_info = race_data.get("session_info", {})
-        drivers = list(race_data.get("drivers") or get_driver_codes(3))
+        drivers = _resolved_roster(race_data, get_driver_codes(3))
         return cls._build(
             race=str(session_info.get("race", "bahrain")),
             year=int(session_info.get("year", 2025)),

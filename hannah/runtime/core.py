@@ -7,6 +7,7 @@ import warnings
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, TypedDict
 
+from hannah._data_.season_roster_resolver import summarize_resolved_roster
 from hannah.runtime.bus import AsyncEventBus
 from hannah.runtime.context import RuntimeContextBuilder
 from hannah.runtime.events import EventEnvelope
@@ -443,6 +444,10 @@ class _RuntimeCoreEngine:
         return {
             "session_info": payload.get("session_info", {}),
             "drivers": payload.get("drivers", []),
+            "resolved_roster": summarize_resolved_roster(
+                payload.get("resolved_roster")
+                or payload.get("session_info", {}).get("resolved_roster")
+            ),
             "available_telemetry": available_telemetry,
             "telemetry_counts": telemetry_counts,
             "raw_payload_chars": raw_payload_chars,

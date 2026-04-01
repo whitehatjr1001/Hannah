@@ -5,6 +5,7 @@ from __future__ import annotations
 from hannah.agent.subagents import RivalAgent
 from hannah.agent.worker_registry import RIVAL_TEAM_PERSONAS
 from hannah.domain.teams import (
+    build_current_resolved_roster,
     canonical_driver_code,
     get_driver_codes,
     get_driver_info,
@@ -59,3 +60,11 @@ def test_rival_personas_cover_current_front_running_reference_teams() -> None:
     assert "Mercedes" in RIVAL_TEAM_PERSONAS["RUS"]
     assert "McLaren" in RIVAL_TEAM_PERSONAS["NOR"]
     assert "Cadillac" in RIVAL_TEAM_PERSONAS["PER"]
+
+
+def test_current_resolved_roster_matches_live_grid_helpers() -> None:
+    roster = build_current_resolved_roster()
+
+    assert roster.driver_codes() == get_driver_codes()
+    assert roster.get("VER").team == get_driver_info("VER").team
+    assert roster.get("HAD").teammate == get_driver_info("HAD").teammate

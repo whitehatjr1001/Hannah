@@ -35,6 +35,20 @@ RIVAL_TEAM_PERSONAS = {
 }
 
 
+def _resolved_ctx_drivers(ctx: RaceContext) -> list[str]:
+    if isinstance(ctx.race_data, dict):
+        roster = ctx.race_data.get("resolved_roster")
+        if not roster:
+            session_info = ctx.race_data.get("session_info", {})
+            if isinstance(session_info, dict):
+                roster = session_info.get("resolved_roster")
+        if isinstance(roster, (list, tuple)):
+            resolved = [str(driver) for driver in roster if str(driver)]
+            if resolved:
+                return resolved
+    return list(ctx.drivers)
+
+
 def build_legacy_worker_specs(ctx: RaceContext) -> list[WorkerSpec]:
     base_prompt = f"{ctx.race.title()} {ctx.year}, weather {ctx.weather}, {ctx.laps} laps."
     specs = [
@@ -61,7 +75,7 @@ def build_legacy_worker_specs(ctx: RaceContext) -> list[WorkerSpec]:
         ),
     ]
 
-    for driver in ctx.drivers[1:]:
+    for driver in _resolved_ctx_drivers(ctx)[1:]:
         specs.append(
             WorkerSpec(
                 worker_id=f"rival_{driver.lower()}",

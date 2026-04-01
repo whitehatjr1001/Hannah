@@ -24,6 +24,20 @@ from hannah.utils.console import Console
 console = Console()
 
 
+def _resolved_ctx_drivers(ctx: RaceContext) -> list[str]:
+    if isinstance(ctx.race_data, dict):
+        roster = ctx.race_data.get("resolved_roster")
+        if not roster:
+            session_info = ctx.race_data.get("session_info", {})
+            if isinstance(session_info, dict):
+                roster = session_info.get("resolved_roster")
+        if isinstance(roster, (list, tuple)):
+            resolved = [str(driver) for driver in roster if str(driver)]
+            if resolved:
+                return resolved
+    return list(ctx.drivers)
+
+
 @dataclass
 class SubAgentResult:
     agent: str
@@ -226,7 +240,8 @@ def build_legacy_worker_specs(ctx: RaceContext) -> list[WorkerSpec]:
 
 
 def _build_default_subagents(ctx: RaceContext) -> list[BaseSubAgent]:
-    rivals = [driver for driver in ctx.drivers[1:]]
+    roster = _resolved_ctx_drivers(ctx)
+    rivals = [driver for driver in roster[1:]]
     return [
         SimAgent(),
         StrategyAgent(),

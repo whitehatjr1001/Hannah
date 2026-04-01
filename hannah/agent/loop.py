@@ -14,6 +14,7 @@ from hannah.agent.worker_runtime import WorkerRuntime, WorkerSpec, make_worker_i
 from hannah.agent.tool_registry import ToolRegistry, normalize_tool_args
 from hannah.cli.format import make_hannah_panel
 from hannah.config.loader import load_config
+from hannah._data_.season_roster_resolver import summarize_resolved_roster
 from hannah.providers.base import (
     coerce_payload,
     coerce_provider_message,
@@ -376,6 +377,10 @@ class AgentLoop:
         return {
             "session_info": payload.get("session_info", {}),
             "drivers": payload.get("drivers", []),
+            "resolved_roster": summarize_resolved_roster(
+                payload.get("resolved_roster")
+                or payload.get("session_info", {}).get("resolved_roster")
+            ),
             "available_telemetry": available_telemetry,
             "telemetry_counts": telemetry_counts,
             "raw_payload_chars": raw_payload_chars,

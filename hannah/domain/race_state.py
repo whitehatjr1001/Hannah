@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
+from hannah.domain.resolved_roster import ResolvedRoster
 from hannah.domain.teams import get_driver_info
 from hannah.domain.tracks import get_track
 
@@ -84,21 +85,24 @@ class RaceSnapshot:
     telemetry: tuple[str, ...] = field(default_factory=tuple)
     event_windows: tuple[RaceEventWindow, ...] = field(default_factory=tuple)
     driver_states: tuple[DriverSnapshot, ...] = field(default_factory=tuple)
+    resolved_roster: ResolvedRoster | None = None
 
     def __post_init__(self) -> None:
         if self.driver_states:
             return
         synthesized: list[DriverSnapshot] = []
-        for index, code in enumerate(self.drivers, start=1):
-            profile = get_driver_info(code)
+        ordered_codes = self._ordered_driver_codes()
+        for index, code in enumerate(ordered_codes, start=1):
+            profile = self.resolved_roster.get(code) if self.resolved_roster is not None else get_driver_info(code)
+            position = self.positions.get(code, index)
             synthesized.append(
                 DriverSnapshot(
                     code=code,
                     team=profile.team,
-                    position=self.positions.get(code, index),
+                    position=position,
                     compound=self.compounds.get(code, "MEDIUM"),
                     tyre_age=self.tyre_ages.get(code, 0),
-                    gap_to_leader=self.gaps.get(code, float(max(index - 1, 0)) * 1.8),
+                    gap_to_leader=self.gaps.get(code, float(max(position - 1, 0)) * 1.8),
                     last_lap_time=90.0 + profile.base_pace_delta,
                 )
             )
@@ -123,6 +127,7 @@ class RaceSnapshot:
             "telemetry": list(self.telemetry),
             "event_windows": [event.to_dict() for event in self.event_windows],
             "driver_states": [driver.to_dict() for driver in self.driver_states],
+            "resolved_roster": None if self.resolved_roster is None else self.resolved_roster.to_prompt_lines(),
         }
 
     def projected_pit_rejoin(self, driver: str, pit_loss: float | None = None) -> PitProjection:
@@ -130,7 +135,7 @@ class RaceSnapshot:
         ordered = sorted(self.driver_states, key=lambda state: state.position)
         target = next((state for state in ordered if state.code == driver.upper()), None)
         if target is None:
-            return PitProjection(projected_position=len(ordered), projected_gap=0.0, car_ahead=None)
+            raise ValueError(f"unknown driver code: {driver}")
 
         delta = float(pit_loss if pit_loss is not None else get_track(self.race).pit_loss)
         projected_gap = target.gap_to_leader + delta
@@ -142,3 +147,7 @@ class RaceSnapshot:
             projected_gap=projected_gap,
             car_ahead=car_ahead,
         )
+
+    def _ordered_driver_codes(self) -> list[str]:
+        unique_codes = list(dict.fromkeys(self.drivers))
+        return sorted(unique_codes, key=lambda code: (self.positions.get(code, len(unique_codes) + 1), unique_codes.index(code)))

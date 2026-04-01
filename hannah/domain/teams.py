@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from hannah.domain.resolved_roster import ResolvedDriverProfile, ResolvedRoster
+
 TeamStrategyStyle = Literal["aggressive", "balanced", "defensive", "opportunistic"]
 
 
@@ -19,6 +21,13 @@ class TeamInfo:
     tyre_management: float
     wet_weather_skill: float
     strategy_style: TeamStrategyStyle
+
+
+@dataclass(frozen=True)
+class TeamCatalogEntry:
+    team: str
+    color: str
+    drivers: tuple[str, ...]
 
 
 DRIVER_GRID: dict[str, TeamInfo] = {
@@ -354,6 +363,27 @@ TEAM_ALIASES: dict[str, str] = {
 }
 
 
+def build_current_resolved_roster(codes: list[str] | tuple[str, ...] | None = None) -> ResolvedRoster:
+    selected_codes = tuple(codes) if codes is not None else DEFAULT_DRIVER_ORDER
+    return ResolvedRoster(
+        year=2026,
+        source="current_f1_2026_fallback",
+        drivers=tuple(_to_resolved_driver_profile(DRIVER_GRID[code]) for code in selected_codes),
+    )
+
+
+def get_team_catalog() -> dict[str, TeamCatalogEntry]:
+    catalog: dict[str, TeamCatalogEntry] = {}
+    for team in dict.fromkeys(info.team for info in DRIVER_GRID.values()):
+        drivers = tuple(code for code in DEFAULT_DRIVER_ORDER if DRIVER_GRID[code].team == team)
+        catalog[team] = TeamCatalogEntry(
+            team=team,
+            color=DRIVER_GRID[drivers[0]].color,
+            drivers=drivers,
+        )
+    return catalog
+
+
 def canonical_team_name(team: str) -> str:
     token = team.strip()
     if not token:
@@ -363,13 +393,14 @@ def canonical_team_name(team: str) -> str:
 
 def get_driver_info(code: str) -> TeamInfo:
     lookup = canonical_driver_code(code)
-    if lookup not in DRIVER_GRID:
+    roster = build_current_resolved_roster()
+    if lookup not in roster.driver_codes():
         raise ValueError(f"unknown driver code: {code}")
     return DRIVER_GRID[lookup]
 
 
 def get_driver_codes(limit: int | None = None) -> list[str]:
-    codes = list(DEFAULT_DRIVER_ORDER)
+    codes = build_current_resolved_roster().driver_codes()
     return codes if limit is None else codes[:limit]
 
 
@@ -392,4 +423,21 @@ def canonical_driver_code(driver: str) -> str:
     direct = token.upper()
     if direct in DRIVER_GRID:
         return direct
-    return DRIVER_ALIASES.get(token.lower(), direct[:3])
+    alias = DRIVER_ALIASES.get(token.lower())
+    if alias is not None:
+        return alias
+    raise ValueError(f"unknown driver: {driver}")
+
+
+def _to_resolved_driver_profile(info: TeamInfo) -> ResolvedDriverProfile:
+    return ResolvedDriverProfile(
+        code=info.code,
+        driver=info.driver,
+        team=info.team,
+        teammate=info.teammate,
+        color=info.color,
+        base_pace_delta=info.base_pace_delta,
+        tyre_management=info.tyre_management,
+        wet_weather_skill=info.wet_weather_skill,
+        strategy_style=info.strategy_style,
+    )
