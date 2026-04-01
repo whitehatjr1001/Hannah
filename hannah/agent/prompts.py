@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from hannah.domain.resolved_roster import ResolvedRoster
 
 DEFAULT_BOOTSTRAP_DOCS = (
     "AGENT_LOOP.md",
@@ -92,10 +93,31 @@ def build_hannah_persona_block(persona: str) -> str:
     )
 
 
+def build_resolved_roster_block(roster: ResolvedRoster | None) -> str:
+    if roster is None:
+        return ""
+    return "\n".join(
+        [
+            "Resolved roster block:",
+            *roster.to_prompt_lines(),
+        ]
+    )
+
+
 def build_strategy_prompt(ctx: Any) -> str:
     """Create a concise strategist prompt from race context."""
+    roster_summary = ""
+    resolved_roster = getattr(ctx, "resolved_roster", None)
+    if isinstance(resolved_roster, ResolvedRoster):
+        roster_drivers = ", ".join(
+            f"{profile.code} {profile.driver} [{profile.team}]"
+            for profile in resolved_roster.drivers
+            if profile.code in set(ctx.drivers)
+        )
+        roster_summary = f" Resolved roster: {resolved_roster.source} ({resolved_roster.year}). {roster_drivers}."
     return (
         f"Race: {ctx.race} {ctx.year}, {ctx.laps} laps, {ctx.weather}. "
         f"Drivers: {', '.join(ctx.drivers)}. "
         f"Race data snapshot: {ctx.race_data or {}}."
+        f"{roster_summary}"
     )

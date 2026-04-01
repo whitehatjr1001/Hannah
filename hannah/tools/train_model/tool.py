@@ -4,14 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from hannah.models.artifact_paths import PUBLIC_MODEL_NAMES
 from hannah.models import train_laptime, train_pit_q, train_pit_rl, train_tyre_deg, train_winner
 
 SUPPORTED_MODEL_NAMES: tuple[str, ...] = (
-    "tyre_model",
-    "laptime_model",
-    "pit_rl",
-    "pit_policy_q",
-    "winner_ensemble",
+    *PUBLIC_MODEL_NAMES,
     "all",
 )
 

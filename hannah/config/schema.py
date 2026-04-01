@@ -38,10 +38,23 @@ class OpenF1Settings:
 
 @dataclass(frozen=True)
 class ModelPaths:
-    tyre_deg: str = "models/saved/tyre_deg_v1.pkl"
-    laptime: str = "models/saved/laptime_v1.pkl"
+    tyre_model: str = "models/saved/tyre_deg_v1.pkl"
+    laptime_model: str = "models/saved/laptime_v1.pkl"
     pit_rl: str = "models/saved/pit_rl_v1.zip"
-    winner: str = "models/saved/winner_ensemble_v1.pkl"
+    pit_policy_q: str = "models/saved/pit_policy_q_v1.pkl"
+    winner_ensemble: str = "models/saved/winner_ensemble_v1.pkl"
+
+    @property
+    def tyre_deg(self) -> str:
+        return self.tyre_model
+
+    @property
+    def laptime(self) -> str:
+        return self.laptime_model
+
+    @property
+    def winner(self) -> str:
+        return self.winner_ensemble
 
 
 @dataclass(frozen=True)

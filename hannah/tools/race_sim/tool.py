@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 
+from hannah.agent.context import RaceContext
+
 SKILL = {
     "name": "race_sim",
     "description": "Runs the fast Monte Carlo simulation and returns strategy outputs.",
@@ -26,6 +28,23 @@ SKILL = {
 }
 
 
+def _resolved_roster(race_data: dict | None, fallback: list[str] | None = None) -> list[str]:
+    if isinstance(race_data, dict):
+        session_info = race_data.get("session_info", {})
+        roster = None
+        if isinstance(session_info, dict):
+            roster = session_info.get("resolved_roster")
+        if not roster:
+            roster = race_data.get("resolved_roster")
+        if not roster:
+            roster = race_data.get("drivers")
+        if isinstance(roster, (list, tuple)):
+            resolved = [str(driver) for driver in roster if str(driver)]
+            if resolved:
+                return resolved
+    return list(fallback or [])
+
+
 async def run(
     race: str,
     year: int = 2025,
@@ -38,22 +57,26 @@ async def run(
     replay: dict | None = None,
 ) -> dict:
     """Run Monte Carlo and strategy heuristics."""
-    from hannah.agent.context import RaceContext
+    from hannah.tools.race_data import tool as race_data_tool
     from hannah.simulation.monte_carlo import build_replay_trace, run_fast
     from hannah.simulation.strategy_engine import StrategyEngine
 
-    selected_drivers = drivers or ["VER", "NOR", "LEC"]
+    race_data: dict | None = None
+    if drivers is None:
+        race_data = await race_data_tool.run(race=race, year=year, session="R")
+    selected_drivers = _resolved_roster(race_data, drivers or ["VER", "NOR", "LEC"])
     seed = _stable_seed(race=race, year=year, weather=weather, drivers=selected_drivers, laps=laps)
-    state = RaceContext(
+    context = RaceContext(
         race=race,
         year=year,
         laps=laps,
         drivers=selected_drivers,
         weather=weather,
+        race_data=race_data,
     )
     from hannah.simulation.sandbox import RaceState
 
-    race_state = RaceState.from_context(state)
+    race_state = RaceState.from_context(context)
     race_state.seed = seed
     sim_result = await run_fast(race_state, n_worlds=n_worlds)
     strategy = StrategyEngine().analyse(race_state, sim_result)

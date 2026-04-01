@@ -4,13 +4,49 @@ from __future__ import annotations
 
 from hannah.agent.context import RaceContext
 from hannah.agent.worker_runtime import WorkerSpec
+from hannah.domain.prompts import build_team_strategist_persona
 
 RIVAL_TEAM_PERSONAS = {
-    "NOR": "You are the McLaren strategist. Prefer aggressive undercuts.",
-    "LEC": "You are the Ferrari strategist. Protect track position.",
-    "HAM": "You are the Mercedes strategist. Default to conservative calls.",
-    "ALO": "You are the Aston Martin strategist. Exploit safety car windows.",
+    code: build_team_strategist_persona(code)
+    for code in (
+        "NOR",
+        "PIA",
+        "RUS",
+        "ANT",
+        "LEC",
+        "HAM",
+        "VER",
+        "HAD",
+        "LAW",
+        "LIN",
+        "GAS",
+        "COL",
+        "HUL",
+        "BOR",
+        "ALB",
+        "SAI",
+        "PER",
+        "BOT",
+        "ALO",
+        "STR",
+        "OCO",
+        "BEA",
+    )
 }
+
+
+def _resolved_ctx_drivers(ctx: RaceContext) -> list[str]:
+    if isinstance(ctx.race_data, dict):
+        roster = ctx.race_data.get("resolved_roster")
+        if not roster:
+            session_info = ctx.race_data.get("session_info", {})
+            if isinstance(session_info, dict):
+                roster = session_info.get("resolved_roster")
+        if isinstance(roster, (list, tuple)):
+            resolved = [str(driver) for driver in roster if str(driver)]
+            if resolved:
+                return resolved
+    return list(ctx.drivers)
 
 
 def build_legacy_worker_specs(ctx: RaceContext) -> list[WorkerSpec]:
@@ -39,7 +75,7 @@ def build_legacy_worker_specs(ctx: RaceContext) -> list[WorkerSpec]:
         ),
     ]
 
-    for driver in ctx.drivers[1:]:
+    for driver in _resolved_ctx_drivers(ctx)[1:]:
         specs.append(
             WorkerSpec(
                 worker_id=f"rival_{driver.lower()}",

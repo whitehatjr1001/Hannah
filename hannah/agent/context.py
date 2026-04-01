@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 
 from hannah.agent import prompts
+from hannah.domain.resolved_roster import ResolvedRoster
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,7 @@ class RaceContext:
     weather: str
     drivers: list[str]
     race_data: dict | None = None
+    resolved_roster: ResolvedRoster | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +40,7 @@ class MainAgentContext:
     bootstrap_docs: tuple[str, ...] = field(default_factory=tuple)
     memory_context: str | None = None
     skills_summary_hook: Callable[[], str] | str | None = None
+    resolved_roster: ResolvedRoster | None = None
 
 
 class NanobotContextBuilder:
@@ -56,8 +59,10 @@ class NanobotContextBuilder:
                 ),
             },
             {"role": "system", "content": prompts.build_skills_summary_block(skills_summary)},
+            {"role": "system", "content": prompts.build_resolved_roster_block(context.resolved_roster)},
             {"role": "system", "content": prompts.build_hannah_persona_block(context.persona)},
         ]
+        messages = [message for message in messages if message["content"]]
         messages.extend(self.build_main_messages(context.recent_messages))
         messages.append({"role": "user", "content": context.user_input})
         return messages

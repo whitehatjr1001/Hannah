@@ -42,6 +42,6 @@ env/
 .coverage
 .coverage.*
 .cache/
-models/
+/models/
 logs/
 data/

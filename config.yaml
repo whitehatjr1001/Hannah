@@ -21,10 +21,11 @@ openf1:
   timeout: 10
 
 models:
-  tyre_deg: models/saved/tyre_deg_v1.pkl
-  laptime: models/saved/laptime_v1.pkl
+  tyre_model: models/saved/tyre_deg_v1.pkl
+  laptime_model: models/saved/laptime_v1.pkl
   pit_rl: models/saved/pit_rl_v1.zip
-  winner: models/saved/winner_ensemble_v1.pkl
+  pit_policy_q: models/saved/pit_policy_q_v1.pkl
+  winner_ensemble: models/saved/winner_ensemble_v1.pkl
 
 rlm:
   enabled: false

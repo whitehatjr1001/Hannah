@@ -28,6 +28,16 @@ def _normalise_yaml_keys(raw: dict[str, Any]) -> dict[str, Any]:
     simulation = raw.get("simulation")
     if isinstance(simulation, dict) and "async" in simulation and "async_enabled" not in simulation:
         simulation["async_enabled"] = simulation.pop("async")
+    models = raw.get("models")
+    if isinstance(models, dict):
+        model_aliases = {
+            "tyre_deg": "tyre_model",
+            "laptime": "laptime_model",
+            "winner": "winner_ensemble",
+        }
+        for legacy_key, public_key in model_aliases.items():
+            if legacy_key in models and public_key not in models:
+                models[public_key] = models.pop(legacy_key)
     return raw
 
 
