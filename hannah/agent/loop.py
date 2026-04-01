@@ -2,21 +2,38 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
+import json
 import re
 from typing import Any
 
 from hannah.agent.memory import Memory
 from hannah.agent.persona import HANNAH_PERSONA
+from hannah.agent.worker_runtime import WorkerRuntime, WorkerSpec, make_worker_id
 from hannah.agent.tool_registry import ToolRegistry, normalize_tool_args
 from hannah.cli.format import make_hannah_panel
 from hannah.config.loader import load_config
+from hannah.providers.base import (
+    coerce_payload,
+    coerce_provider_message,
+    coerce_tool_calls,
+    extract_first_message,
+    flatten_content_blocks,
+    message_to_provider_message,
+    normalize_message_content,
+    payload_to_provider_message,
+)
 from hannah.providers.registry import ProviderRegistry
-from hannah.runtime import AsyncEventBus, MainAgentContext, RuntimeContextBuilder, RuntimeCore
+from hannah.runtime.bus import AsyncEventBus
+from hannah.runtime.context import MainAgentContext, RuntimeContextBuilder
+from hannah.runtime.events import EventEnvelope
+from hannah.runtime.turn_state import TurnState
 from hannah.utils.console import Console
 
 console = Console()
 _TRAIN_MODEL_TOOL_NAME = "train_model"
+_TOOL_MESSAGE_MAX_CHARS = 20_000
 _EXPLICIT_TRAINING_HINTS = (
     "train ",
     "train the",
@@ -69,17 +86,19 @@ class AgentLoop:
         self.provider = provider or ProviderRegistry.from_config(self.config)
         self.event_bus = AsyncEventBus()
         self.context_builder = RuntimeContextBuilder()
-        self.runtime = RuntimeCore(
-            provider=self.provider,
-            registry=self.registry,
-            event_bus=self.event_bus,
-            memory=self.memory,
-            context_builder=self.context_builder,
-            temperature=self.config.agent.temperature,
-            max_tokens=self.config.agent.max_tokens,
-            console=console,
-        )
-        self.registry = self.runtime.registry
+        self._worker_runtime: WorkerRuntime | None = None
+        runtime_binding = getattr(self.registry, "with_runtime_tools", None)
+        if callable(runtime_binding):
+            self._worker_runtime = WorkerRuntime(
+                provider=self.provider,
+                registry=self.registry,
+                event_bus=self.event_bus,
+                context_builder=self.context_builder,
+                temperature=self.config.agent.temperature,
+                max_tokens=self.config.agent.max_tokens,
+                console=console,
+            )
+            self.registry = runtime_binding({"spawn": self._handle_spawn_tool})
         self.tools = self.registry.get_tool_specs()
 
     async def run_turn(self, user_input: str, *, session_id: str = "default") -> str:
@@ -92,19 +111,83 @@ class AgentLoop:
                 user_input=user_input,
             )
         )
-        reply = await self.runtime.run_turn(
-            messages=messages,
+        state = TurnState(
             session_id=session_id,
-            turn_tools=turn_tools,
-            should_retry=lambda final_text, retry_used: self._should_retry_analysis_turn(
+            messages=self.context_builder.build_main_messages(messages),
+        )
+        retry_used = False
+
+        await self._publish_event(
+            "user_message_received",
+            state,
+            payload={"content": state.latest_user_content()},
+        )
+
+        while True:
+            await self._publish_event(
+                "provider_request_started",
+                state,
+                payload={
+                    "message_count": len(state.messages),
+                    "tool_names": [tool["function"]["name"] for tool in turn_tools],
+                },
+            )
+            try:
+                response = await self.provider.complete(
+                    messages=state.snapshot_messages(),
+                    tools=turn_tools if turn_tools else None,
+                    temperature=self.config.agent.temperature,
+                    max_tokens=self.config.agent.max_tokens,
+                )
+            except Exception as exc:
+                await self._publish_event(
+                    "error_emitted",
+                    state,
+                    payload={"stage": "provider", "error": str(exc)},
+                )
+                raise
+
+            message = self._coerce_first_message(response)
+            tool_calls = list(message.tool_calls or [])
+            await self._publish_event(
+                "provider_response_received",
+                state,
+                payload={"has_tool_calls": bool(tool_calls)},
+            )
+
+            if tool_calls:
+                for tool_call in tool_calls:
+                    console.print(
+                        f"  [dim cyan]◆ calling tool:[/dim cyan] [cyan]{tool_call.function.name}[/cyan]"
+                    )
+                state.append_message(message.model_dump())
+                tool_messages = await self._execute_tool_calls(
+                    state.snapshot_messages(),
+                    tool_calls,
+                    state=state,
+                )
+                state.extend_messages(tool_messages)
+                continue
+
+            final_text = message.content or ""
+            if self._should_retry_analysis_turn(
                 user_input=user_input,
                 final_text=final_text,
                 retry_used=retry_used,
-            ),
-            retry_guidance=self._analysis_retry_guidance(),
-            execute_tool_calls=self._execute_tool_calls,
-        )
-        final_text = reply.get("content", "")
+            ):
+                state.append_message(message.model_dump())
+                state.append_message({"role": "system", "content": self._analysis_retry_guidance()})
+                retry_used = True
+                continue
+
+            state.append_message(message.model_dump())
+            await self._publish_event(
+                "final_answer_emitted",
+                state,
+                payload={"content": final_text},
+            )
+            break
+
         self.memory.add("user", user_input)
         self.memory.add("assistant", final_text)
         return final_text
@@ -161,21 +244,118 @@ class AgentLoop:
 
     async def _execute_tool_calls(
         self,
-        tool_calls: list,
+        messages_or_tool_calls: list,
+        tool_calls: list | None = None,
         *,
         state: Any = None,
     ) -> list[dict[str, str]]:
-        return await self.runtime._execute_tool_calls(
-            tool_calls,
-            state=state,
-            call_tool=self._call_tool,
+        pending_tool_calls = tool_calls if tool_calls is not None else messages_or_tool_calls
+        results = await asyncio.gather(
+            *(self._invoke_tool(tool_call, state=state) for tool_call in pending_tool_calls),
+            return_exceptions=True,
         )
 
+        messages: list[dict[str, Any]] = []
+        for tool_call, result in zip(pending_tool_calls, results):
+            if isinstance(result, Exception):
+                console.print(f"  [red]✗ {tool_call.function.name}: {result}[/red]")
+                content = self._serialize_tool_message(
+                    {
+                        "status": "error",
+                        "tool": tool_call.function.name,
+                        "error": str(result),
+                    },
+                    tool_name=tool_call.function.name,
+                )
+            else:
+                console.print(f"  [green]✓ {tool_call.function.name} returned[/green]")
+                content = self._serialize_tool_message(result, tool_name=tool_call.function.name)
+
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "name": tool_call.function.name,
+                    "content": content,
+                }
+            )
+            subagent_result_message = self._build_subagent_result_message(
+                tool_name=tool_call.function.name,
+                result=result if not isinstance(result, Exception) else None,
+            )
+            if subagent_result_message is not None:
+                messages.append(subagent_result_message)
+        return messages
+
+    async def _invoke_tool(
+        self,
+        tool_call: Any,
+        *,
+        state: TurnState | None = None,
+    ) -> dict[str, Any]:
+        arguments = self._load_tool_arguments(tool_call.function.arguments)
+        if state is not None:
+            await self._publish_event(
+                "tool_call_started",
+                state,
+                payload={"tool_name": tool_call.function.name, "args": arguments},
+            )
+
+        try:
+            result = await self._call_tool_with_optional_state(tool_call, state=state)
+        except Exception as exc:
+            if state is not None:
+                await self._publish_event(
+                    "tool_call_finished",
+                    state,
+                    payload={
+                        "tool_name": tool_call.function.name,
+                        "status": "error",
+                        "error": str(exc),
+                    },
+                )
+            raise
+
+        if state is not None:
+            await self._publish_event(
+                "tool_call_finished",
+                state,
+                payload={"tool_name": tool_call.function.name, "status": "ok"},
+            )
+        return result
+
+    async def _call_tool_with_optional_state(
+        self,
+        tool_call: Any,
+        *,
+        state: TurnState | None = None,
+    ) -> dict[str, Any]:
+        if "state" in inspect.signature(self._call_tool).parameters:
+            result = self._call_tool(tool_call, state=state)
+        else:
+            result = self._call_tool(tool_call)
+        if inspect.isawaitable(result):
+            return await result
+        return result
+
     def _serialize_tool_message(self, payload: Any, *, tool_name: str) -> str:
-        return self.runtime._serialize_tool_message(payload, tool_name=tool_name)
+        if isinstance(payload, str):
+            return payload
+        return json.dumps(self._compact_tool_payload(payload, tool_name=tool_name), default=str)
 
     def _compact_tool_payload(self, payload: Any, *, tool_name: str) -> Any:
-        return self.runtime._compact_tool_payload(payload, tool_name=tool_name)
+        serialized = json.dumps(payload, default=str)
+        if len(serialized) <= _TOOL_MESSAGE_MAX_CHARS:
+            return payload
+        if tool_name == "race_data" and isinstance(payload, dict):
+            return self._summarize_race_data_payload(payload, raw_payload_chars=len(serialized))
+        return {
+            "summary": {
+                "tool": tool_name,
+                "raw_payload_chars": len(serialized),
+                "message": "tool payload compacted for provider context",
+            }
+        }
 
     def _summarize_race_data_payload(
         self,
@@ -183,13 +363,29 @@ class AgentLoop:
         *,
         raw_payload_chars: int,
     ) -> dict[str, Any]:
-        return self.runtime._summarize_race_data_payload(
-            payload,
-            raw_payload_chars=raw_payload_chars,
-        )
+        telemetry_counts = {
+            "laps": self._record_count(payload.get("laps")),
+            "stints": self._record_count(payload.get("stints")),
+            "weather": self._record_count(payload.get("weather")),
+        }
+        available_telemetry = [
+            name
+            for name, count in telemetry_counts.items()
+            if count > 0
+        ]
+        return {
+            "session_info": payload.get("session_info", {}),
+            "drivers": payload.get("drivers", []),
+            "available_telemetry": available_telemetry,
+            "telemetry_counts": telemetry_counts,
+            "raw_payload_chars": raw_payload_chars,
+            "note": "raw race_data payload compacted for provider context",
+        }
 
     def _record_count(self, value: Any) -> int:
-        return self.runtime._record_count(value)
+        if isinstance(value, list):
+            return len(value)
+        return 0
 
     async def _call_tool(self, tool_call, *, state: Any = None) -> dict:
         raw_arguments = tool_call.function.arguments
@@ -199,7 +395,7 @@ class AgentLoop:
             arguments = normalizer(tool_call.function.name, arguments)
         else:
             arguments = self._normalize_tool_args_from_specs(tool_call.function.name, arguments)
-        registry_call = getattr(self.registry, "call")
+        registry_call = self._resolve_registry_caller()
         if "state" in inspect.signature(registry_call).parameters:
             result = registry_call(tool_call.function.name, arguments, state=state)
         else:
@@ -209,7 +405,22 @@ class AgentLoop:
         return result
 
     def _load_tool_arguments(self, raw_arguments: Any) -> dict[str, Any]:
-        return self.runtime._load_tool_arguments(raw_arguments)
+        if isinstance(raw_arguments, dict):
+            return raw_arguments
+        try:
+            parsed = json.loads(raw_arguments)
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    def _resolve_registry_caller(self) -> Any:
+        execute = getattr(self.registry, "execute", None)
+        if callable(execute):
+            return execute
+        call = getattr(self.registry, "call", None)
+        if callable(call):
+            return call
+        raise AttributeError("registry must define either execute() or call()")
 
     def _normalize_tool_args_from_specs(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         for tool in self.tools:
@@ -223,28 +434,91 @@ class AgentLoop:
         return args
 
     def _coerce_first_message(self, response: object) -> Any:
-        return self.runtime._coerce_first_message(response)
+        return coerce_provider_message(response)
 
     def _extract_first_message(self, response: object) -> object | None:
-        return self.runtime._extract_first_message(response)
+        return extract_first_message(response)
 
     def _message_to_adapter(self, message: object) -> Any:
-        return self.runtime._message_to_adapter(message)
+        return message_to_provider_message(message)
 
     def _payload_to_message(self, message: dict[str, Any]) -> Any:
-        return self.runtime._payload_to_message(message)
+        return payload_to_provider_message(message)
 
     def _coerce_tool_calls(self, tool_calls_payload: Any) -> list[Any]:
-        return self.runtime._coerce_tool_calls(tool_calls_payload)
+        return coerce_tool_calls(tool_calls_payload)
 
     def _coerce_payload(self, payload: Any) -> dict[str, Any] | None:
-        return self.runtime._coerce_payload(payload)
+        return coerce_payload(payload)
 
     def _normalize_message_content(self, content: Any, *, has_tool_calls: bool) -> str:
-        return self.runtime._normalize_message_content(content, has_tool_calls=has_tool_calls)
+        return normalize_message_content(content, has_tool_calls=has_tool_calls)
 
     def _flatten_content_blocks(self, blocks: list[Any]) -> str:
-        return self.runtime._flatten_content_blocks(blocks)
+        return flatten_content_blocks(blocks)
+
+    async def _publish_event(
+        self,
+        event_type: str,
+        state: TurnState,
+        *,
+        payload: dict[str, Any] | None = None,
+        worker_id: str | None = None,
+    ) -> None:
+        await self.event_bus.publish(
+            EventEnvelope.create(
+                event_type=event_type,
+                session_id=state.session_id,
+                message_id=state.message_id,
+                worker_id=worker_id,
+                payload=payload or {},
+            )
+        )
+
+    async def _handle_spawn_tool(
+        self,
+        task: str,
+        system_prompt: str,
+        allowed_tools: list[str],
+        result_contract: dict[str, Any],
+        *,
+        state: TurnState | None = None,
+    ) -> dict[str, Any]:
+        if self._worker_runtime is None:
+            raise ValueError("spawn tool is not available")
+
+        spec = WorkerSpec(
+            worker_id=make_worker_id("worker"),
+            task=task,
+            system_prompt=system_prompt,
+            allowed_tools=list(allowed_tools),
+            result_contract=dict(result_contract),
+        )
+        parent_session_id = state.session_id if state is not None else "default"
+        return await self._worker_runtime.run_worker(
+            spec,
+            parent_session_id=parent_session_id,
+        )
+
+    def _build_subagent_result_message(
+        self,
+        *,
+        tool_name: str,
+        result: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if tool_name != "spawn" or not isinstance(result, dict):
+            return None
+
+        worker_id = result.get("worker_id")
+        if not isinstance(worker_id, str) or not worker_id:
+            return None
+
+        return {
+            "role": "system",
+            "name": "subagent_result",
+            "worker_id": worker_id,
+            "content": json.dumps(result, default=str),
+        }
 
 
 AgentCore = AgentLoop

@@ -126,61 +126,126 @@ def test_run_command_completes_tool_roundtrip_without_crashing(monkeypatch: pyte
         "tool": "race_data",
         "args": {"race": "bahrain", "year": 2025},
     }
+    assert not hasattr(loop, "runtime")
 
 
-def test_run_turn_delegates_to_runtime_core_with_built_context(
+def test_run_turn_directly_retries_permission_deferrals_in_agent_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     memory = _StubMemory(recent=[{"role": "assistant", "content": "Previous context."}])
-    loop = AgentLoop(memory=memory, registry=_StubRegistry(), provider=_RoundTripProvider())
+    provider_calls: list[list[dict[str, Any]]] = []
+
+    class _RetryingProvider:
+        async def complete(
+            self,
+            messages: list[dict[str, Any]],
+            tools: list[dict[str, Any]] | None,
+            temperature: float,
+            max_tokens: int,
+        ) -> dict[str, Any]:
+            del tools, temperature, max_tokens
+            provider_calls.append(json.loads(json.dumps(messages)))
+            if len(provider_calls) == 1:
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": "Let me know if you'd like me to proceed with that analysis!",
+                            }
+                        }
+                    ]
+                }
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "Strategy locked now.",
+                        }
+                    }
+                ]
+            }
+
+    loop = AgentLoop(memory=memory, registry=_StubRegistry(), provider=_RetryingProvider())
+
+    monkeypatch.setattr(agent_loop.console, "print", lambda *args, **kwargs: None)
+
+    user_input = "predict the race strategy for the upcoming japanese grand prix"
+    result = asyncio.run(loop.run_turn(user_input, session_id="cli:japan"))
+
+    assert result == "Strategy locked now."
+    assert len(provider_calls) == 2
+    assert provider_calls[0][-1] == {"role": "user", "content": user_input}
+    assert provider_calls[0][1]["content"].startswith(
+        "This turn is a race analysis or prediction request"
+    )
+    assert provider_calls[0][2] == {"role": "assistant", "content": "Previous context."}
+    assert provider_calls[1][-2] == {
+        "role": "assistant",
+        "content": "Let me know if you'd like me to proceed with that analysis!",
+    }
+    assert provider_calls[1][-1] == {
+        "role": "system",
+        "content": (
+            "The user already asked you to do the analysis. "
+            "Do not ask for permission or defer. "
+            "Call the relevant tools now and answer decisively."
+        ),
+    }
+    assert memory.added == [("user", user_input), ("assistant", "Strategy locked now.")]
+
+
+def test_run_turn_builds_context_without_runtime_delegate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    memory = _StubMemory(recent=[{"role": "assistant", "content": "Previous context."}])
     captured: dict[str, Any] = {}
 
-    async def _fake_runtime_run_turn(
-        messages: list[dict[str, Any]],
-        *,
-        session_id: str,
-        turn_tools: list[dict[str, Any]] | None,
-        should_retry,
-        retry_guidance: str | None,
-        execute_tool_calls,
-    ) -> dict[str, str]:
-        captured["messages"] = messages
-        captured["session_id"] = session_id
-        captured["turn_tools"] = turn_tools
-        captured["retry_guidance"] = retry_guidance
-        captured["execute_tool_calls"] = execute_tool_calls
-        captured["retry_permission_deferral"] = should_retry(
-            "Let me know if you'd like me to proceed with that analysis!",
-            False,
-        )
-        captured["retry_on_final_answer"] = should_retry("strategy locked", False)
-        return {"role": "assistant", "content": "Adapter reply"}
+    class _CapturingProvider:
+        async def complete(
+            self,
+            messages: list[dict[str, Any]],
+            tools: list[dict[str, Any]] | None,
+            temperature: float,
+            max_tokens: int,
+        ) -> dict[str, Any]:
+            captured["messages"] = json.loads(json.dumps(messages))
+            captured["tools"] = tools
+            captured["temperature"] = temperature
+            captured["max_tokens"] = max_tokens
+            return {"choices": [{"message": {"role": "assistant", "content": "Adapter reply"}}]}
 
-    monkeypatch.setattr(loop.runtime, "run_turn", _fake_runtime_run_turn)
+    loop = AgentLoop(memory=memory, registry=_StubRegistry(), provider=_CapturingProvider())
+
+    async def _unexpected_execute_tool_calls(
+        tool_calls: list[SimpleNamespace],
+        *,
+        state: Any = None,
+    ) -> list[dict[str, str]]:
+        raise AssertionError(f"unexpected tool calls: {tool_calls}, {state}")
+
+    monkeypatch.setattr(loop, "_execute_tool_calls", _unexpected_execute_tool_calls)
 
     user_input = "predict the race strategy for the upcoming japanese grand prix"
     result = asyncio.run(loop.run_turn(user_input, session_id="cli:japan"))
 
     assert result == "Adapter reply"
-    assert captured["session_id"] == "cli:japan"
     assert captured["messages"][-1] == {"role": "user", "content": user_input}
     assert "identity/runtime block" in captured["messages"][0]["content"].lower()
-    assert "this turn is a race analysis or prediction request" in captured["messages"][0]["content"].lower()
+    assert "this turn is a race analysis or prediction request" in captured["messages"][0][
+        "content"
+    ].lower()
     assert "bootstrap docs block" in captured["messages"][1]["content"].lower()
     assert "memory context block" in captured["messages"][2]["content"].lower()
     assert "skills summary hook block" in captured["messages"][3]["content"].lower()
     assert "hannah f1 persona block" in captured["messages"][4]["content"].lower()
     assert captured["messages"][5] == {"role": "assistant", "content": "Previous context."}
-    assert {tool["function"]["name"] for tool in captured["turn_tools"]} == {"race_data"}
-    assert callable(captured["execute_tool_calls"])
-    assert captured["retry_permission_deferral"] is True
-    assert captured["retry_on_final_answer"] is False
-    assert captured["retry_guidance"] == (
-        "The user already asked you to do the analysis. "
-        "Do not ask for permission or defer. "
-        "Call the relevant tools now and answer decisively."
-    )
+    assert {tool["function"]["name"] for tool in captured["tools"]} == {"race_data"}
+    assert captured["temperature"] == loop.config.agent.temperature
+    assert captured["max_tokens"] == loop.config.agent.max_tokens
     assert memory.added == [("user", user_input), ("assistant", "Adapter reply")]
+    assert not hasattr(loop, "runtime")
 
 
 def test_run_turn_uses_adapter_execute_tool_calls_hook_in_real_roundtrip(
@@ -195,6 +260,7 @@ def test_run_turn_uses_adapter_execute_tool_calls_hook_in_real_roundtrip(
     monkeypatch.setattr(agent_loop.console, "print", lambda *args, **kwargs: None)
 
     async def _fake_execute_tool_calls(
+        messages: list[dict[str, Any]],
         tool_calls: list[SimpleNamespace],
         *,
         state: Any = None,
@@ -241,6 +307,45 @@ def test_call_tool_coerces_arguments_for_dict_json_and_invalid(
 
     assert registry.calls[-1] == ("race_data", expected)
     assert result == {"tool": "race_data", "args": expected}
+
+
+def test_call_tool_uses_execute_compatibility_shim_when_registry_exposes_it() -> None:
+    @dataclass
+    class _ExecuteOnlyRegistry:
+        calls: list[tuple[str, dict[str, Any], Any]] = field(default_factory=list)
+
+        def get_tool_specs(self) -> list[dict[str, Any]]:
+            return [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "race_data",
+                        "description": "fetch race data",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ]
+
+        async def execute(
+            self,
+            name: str,
+            args: dict[str, Any],
+            *,
+            state: Any = None,
+        ) -> dict[str, Any]:
+            self.calls.append((name, args, state))
+            return {"tool": name, "args": args, "state_present": state is not None}
+
+    registry = _ExecuteOnlyRegistry()
+    loop = AgentLoop(memory=_StubMemory(), registry=registry, provider=_RoundTripProvider())
+
+    tool_call = _make_tool_call("race_data", {"lap": 18}, call_id="execute-shim")
+    result = asyncio.run(loop._call_tool(tool_call, state=object()))
+
+    assert registry.calls[0][0] == "race_data"
+    assert registry.calls[0][1] == {"lap": 18}
+    assert registry.calls[0][2] is not None
+    assert result == {"tool": "race_data", "args": {"lap": 18}, "state_present": True}
 
 
 def test_execute_tool_calls_serializes_errors_into_tool_messages(monkeypatch: pytest.MonkeyPatch) -> None:

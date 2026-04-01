@@ -4,23 +4,10 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Protocol
 
 from hannah.config.schema import AppConfig
+from hannah.providers.base import CompletionProvider
 from hannah.providers.litellm_provider import LiteLLMProvider
-
-
-class CompletionProvider(Protocol):
-    """Provider contract consumed by the agent loop and sub-agents."""
-
-    async def complete(
-        self,
-        messages: list[dict],
-        tools: list[dict] | None,
-        temperature: float,
-        max_tokens: int,
-    ) -> object:
-        ...
 
 
 @dataclass(frozen=True)
