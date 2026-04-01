@@ -164,10 +164,13 @@ def test_run_turn_delegates_to_runtime_core_with_built_context(
     assert result == "Adapter reply"
     assert captured["session_id"] == "cli:japan"
     assert captured["messages"][-1] == {"role": "user", "content": user_input}
-    assert captured["messages"][1]["content"].startswith(
-        "This turn is a race analysis or prediction request"
-    )
-    assert captured["messages"][2] == {"role": "assistant", "content": "Previous context."}
+    assert "identity/runtime block" in captured["messages"][0]["content"].lower()
+    assert "this turn is a race analysis or prediction request" in captured["messages"][0]["content"].lower()
+    assert "bootstrap docs block" in captured["messages"][1]["content"].lower()
+    assert "memory context block" in captured["messages"][2]["content"].lower()
+    assert "skills summary hook block" in captured["messages"][3]["content"].lower()
+    assert "hannah f1 persona block" in captured["messages"][4]["content"].lower()
+    assert captured["messages"][5] == {"role": "assistant", "content": "Previous context."}
     assert {tool["function"]["name"] for tool in captured["turn_tools"]} == {"race_data"}
     assert callable(captured["execute_tool_calls"])
     assert captured["retry_permission_deferral"] is True
