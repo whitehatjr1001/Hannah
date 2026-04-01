@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import os
 import sys
 from pathlib import Path
@@ -24,6 +23,7 @@ from hannah.cli.provider_ui import (
     render_provider_status_table,
     run_provider_configure_flow,
 )
+from hannah.bus import run_bus_turn
 from hannah.session.manager import SessionManager, SessionMemory, create_session_key
 from hannah.utils.console import Console, Table
 
@@ -81,7 +81,10 @@ async def run_interactive_chat_session(
 
     while True:
         try:
-            user_input = _read_user_input(prompt_session=prompt_session, session_id=active_session)
+            user_input = await _read_user_input(
+                prompt_session=prompt_session,
+                session_id=active_session,
+            )
         except (EOFError, KeyboardInterrupt):
             console.print("\nGoodbye!\n")
             return
@@ -210,9 +213,13 @@ async def _run_chat_turn(
     run_turn = getattr(agent_loop, "run_turn", None)
     if not callable(run_turn):
         raise RuntimeError("chat mode requires AgentLoop.run_turn()")
-    if "session_id" in inspect.signature(run_turn).parameters:
-        return await run_turn(message, session_id=session_id)
-    return await run_turn(message)
+    outbound = await run_bus_turn(
+        agent_loop=agent_loop,
+        message=message,
+        session_id=session_id,
+        channel="chat",
+    )
+    return outbound.content
 
 
 def _handle_local_command(
@@ -298,10 +305,18 @@ def _build_prompt_session():
     )
 
 
-def _read_user_input(*, prompt_session, session_id: str) -> str:
+async def _read_user_input(*, prompt_session, session_id: str) -> str:
     if prompt_session is None or HTML is None:
-        return input(f"You [{session_id}] > ")
-    return prompt_session.prompt(HTML("<b fg='ansiblue'>You</b> <style fg='ansibrightblack'>›</style> "))
+        return await asyncio.to_thread(input, f"You [{session_id}] > ")
+    prompt_async = getattr(prompt_session, "prompt_async", None)
+    if callable(prompt_async):
+        return await prompt_async(
+            HTML("<b fg='ansiblue'>You</b> <style fg='ansibrightblack'>›</style> ")
+        )
+    return await asyncio.to_thread(
+        prompt_session.prompt,
+        HTML("<b fg='ansiblue'>You</b> <style fg='ansibrightblack'>›</style> "),
+    )
 
 
 def build_runtime_event_handler(

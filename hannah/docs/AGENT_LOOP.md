@@ -2,17 +2,34 @@
 
 ## Purpose
 
-This document describes the current Hannah agent runtime after slice 1.
+This document describes the current Hannah agent runtime after the nanobot-style runtime migration slice.
 
-The primary runtime surface is `hannah agent`. Legacy commands such as `ask` and `chat` are compatibility wrappers over the same shared runtime path. `AgentLoop` still exists, but it is now a compatibility adapter over `RuntimeCore`.
+The important change is simple:
 
-The short version:
+- `hannah agent` is now the primary product surface
+- `RuntimeCore` is now the real loop owner
+- `AgentLoop` remains as a compatibility adapter
+- generic bounded subagents now run through the same runtime shape
+- runtime events stream to the CLI and persist to session storage
 
-1. a CLI surface collects a user message
-2. `RuntimeCore` owns the turn, provider call, tool execution, worker spawning, and runtime events
-3. `AgentLoop` adapts existing memory/persona/tool-selection behavior onto that core
-4. runtime events stream to the terminal and persist to JSONL session records
-5. tools and simulation layers still own the F1 domain work
+The loop is no longer best understood as a wrapper around command handlers. The command layer is now mostly ingress. The runtime is the product surface.
+
+---
+
+## Mental Model
+
+Think about Hannah in this order:
+
+1. CLI surface receives user intent
+2. `AgentLoop` builds Hannah-specific context and selects the allowed tool surface
+3. `RuntimeCore` runs the provider -> tool -> provider loop
+4. tools own deterministic F1 work
+5. `spawn` can create bounded worker runtimes with restricted tools
+6. runtime events drive both terminal streaming and persisted event history
+
+That means the loop is:
+
+`CLI -> AgentLoop adapter -> RuntimeCore -> provider/tools/workers -> streamed + persisted results`
 
 ---
 
@@ -20,116 +37,143 @@ The short version:
 
 | File | Responsibility |
 | --- | --- |
-| `hannah.py` | Root CLI wrapper |
-| `hannah/cli/app.py` | Registers `agent` as the primary runtime command plus compatibility wrappers |
-| `hannah/cli/agent_command.py` | Shared one-shot and interactive execution path for `agent` and wrapper commands |
-| `hannah/cli/chat.py` | Session-aware interactive shell and runtime-event subscription |
-| `hannah/agent/loop.py` | Compatibility adapter that builds prompts, selects tools, and delegates turn execution to `RuntimeCore` |
-| `hannah/runtime/core.py` | Shared runtime owner for provider calls, tool roundtrips, worker spawning, and event emission |
-| `hannah/runtime/context.py` | Main-agent and worker message assembly |
-| `hannah/runtime/events.py` | Runtime event envelope and allowed event names |
-| `hannah/runtime/bus.py` | Async event bus used for streaming and persistence hooks |
-| `hannah/agent/worker_runtime.py` | Generic worker execution, `WorkerSpec`, spawn policy, and worker result handling |
-| `hannah/agent/tool_registry.py` | Tool discovery plus runtime-bound tool binding, normalization, and dispatch |
-| `hannah/session/manager.py` | JSONL session persistence for chat and `agent` session mode |
-| `hannah/session/event_records.py` | JSON-safe serialization for persisted runtime events |
+| `hannah/cli/app.py` | CLI command registration. `agent` is the primary runtime entrypoint. |
+| `hannah/cli/agent_command.py` | Shared execution path for `agent` plus one-shot compatibility wrappers. |
+| `hannah/cli/chat.py` | Interactive shell, session lifecycle, event subscription, and runtime rendering. |
+| `hannah/agent/loop.py` | Compatibility adapter that assembles Hannah context and delegates turn execution to `RuntimeCore`. |
+| `hannah/runtime/core.py` | Owns the actual agent turn loop: provider calls, tool roundtrips, worker reinjection, and event emission. |
+| `hannah/runtime/context.py` | Builds message stacks for main-agent and worker turns. |
+| `hannah/runtime/events.py` | Defines the allowed runtime event contract. |
+| `hannah/runtime/bus.py` | Async event bus for live streaming and persistence hooks. |
+| `hannah/agent/tool_registry.py` | Tool discovery, normalization, validation, and dispatch. |
+| `hannah/agent/worker_runtime.py` | Generic worker runtime, spawn policy, result-contract enforcement, and worker event emission. |
+| `hannah/session/manager.py` | JSONL session persistence for session-backed runtime flows. |
+| `hannah/session/event_records.py` | JSON-safe serialization of runtime events into durable session records. |
 
 ---
 
 ## Runtime Surfaces
 
-`hannah agent` is the canonical entrypoint.
+### Primary
 
 - `hannah agent --message "..."` runs a one-shot turn through the shared runtime
-- `hannah agent` on a real TTY launches the interactive session path
-- `hannah chat` is a compatibility wrapper over that same runtime path
-- `hannah ask` is a compatibility wrapper for freeform one-shot turns
-- `hannah simulate`, `hannah predict`, and `hannah strategy` are intent-building wrappers over that same shared runtime path
+- `hannah agent` on a TTY launches the interactive session-backed runtime shell
 
-The runtime boundary is intentional:
+### Compatibility wrappers on the same runtime
 
-- `agent` and `chat` use session-backed persistence
-- `ask` preserves the older one-shot behavior without session persistence
-- `simulate`, `predict`, and `strategy` still enter through `hannah/cli/agent_command.py`; they differ only by building structured natural-language intents first
-- direct utility commands such as `sandbox`, `fetch`, and `train` stay off the shared `agent_command` and session-wrapper path when they intentionally call legacy command helpers
-- those utility commands are still on the shared runtime core because `AgentLoop` remains a compatibility adapter over `RuntimeCore`
+- `hannah chat`
+- `hannah ask`
+- `hannah simulate`
+- `hannah predict`
+- `hannah strategy`
 
----
+### Boundary notes
 
-## AgentLoop Compatibility Layer
+- `agent` and `chat` are session-backed surfaces
+- `ask`, `simulate`, `predict`, and `strategy` stay ephemeral by default
+- `sandbox`, `fetch`, and `train` are not routed through the shared `agent_command` session wrapper, but they still execute through the Hannah runtime stack where applicable
 
-`AgentLoop` is no longer the core runtime owner.
-
-Its job is now:
-
-1. load config, memory, provider, and registry
-2. build main-turn messages from persona, dynamic guidance, memory, and user input
-3. choose the per-turn tool surface
-4. call `RuntimeCore.run_turn(...)`
-5. persist the final user and assistant messages through the existing memory interface
-
-That keeps the old `AgentLoop.run_turn(...)` and `AgentLoop.run_command(...)` API stable while moving actual runtime behavior into `RuntimeCore`.
+So the runtime is shared, but the UX contract is not identical across commands.
 
 ---
 
-## Tool Surface
+## Actual Turn Flow
 
-`ToolRegistry` still discovers the regular tool modules under `hannah/tools/*/tool.py`, but the main-agent runtime surface now also includes a runtime-bound `spawn` tool.
+For a normal `agent` turn, the flow is:
 
-Main-agent turns can see:
+1. CLI collects a message
+2. `hannah/cli/agent_command.py` or `hannah/cli/chat.py` creates the execution context
+3. `AgentLoop` builds persona, recent memory, and the tool allowlist for the turn
+4. `AgentLoop` delegates the turn to `RuntimeCore`
+5. `RuntimeCore` emits `user_message_received`
+6. `RuntimeCore` calls the provider with messages and tool specs
+7. if the provider returns tool calls, `RuntimeCore` emits tool events, normalizes args, and dispatches tools
+8. tool results are serialized and appended back into the message stack
+9. if one of the tools is `spawn`, `WorkerRuntime` creates a bounded worker turn with restricted tools
+10. worker results are validated against the declared result contract
+11. worker results are reinjected into the parent turn as tool output
+12. `RuntimeCore` repeats until the provider returns final assistant text
+13. `RuntimeCore` emits `final_answer_emitted`
+14. session-backed surfaces persist both chat messages and runtime event records
 
-- domain tools such as `race_data`, `race_sim`, `pit_strategy`, `predict_winner`, and `train_model`
-- runtime-bound `spawn`, which is injected by `RuntimeCore` through `ToolRegistry.with_runtime_tools(...)`
+The LLM remains the orchestrator.
 
-Worker turns do not get the full main-agent tool surface. `WorkerRuntime` builds a restricted registry from the parent registry and the worker's allowlist.
+The LLM does not become the simulator.
+
+The simulator, data, and model layers still own deterministic F1 work.
+
+---
+
+## Mermaid
+
+```mermaid
+flowchart TD
+    U[User / CLI] --> C[CLI Command]
+    C --> AC[agent_command or chat shell]
+    AC --> AL[AgentLoop adapter]
+    AL --> RC[RuntimeCore]
+
+    AL --> CTX[Persona + Memory + Tool Allowlist]
+    CTX --> RC
+
+    RC --> BUS[AsyncEventBus]
+    RC --> P[Provider]
+    RC --> TR[ToolRegistry]
+
+    P --> DECIDE{Tool calls returned?}
+
+    DECIDE -- No --> FINAL[Final assistant text]
+    FINAL --> BUS
+    FINAL --> SESS[SessionManager]
+    FINAL --> OUT[CLI render]
+
+    DECIDE -- Yes --> EXEC[Execute normalized tool calls]
+    EXEC --> F1[F1 tools]
+    EXEC --> SPAWN[spawn tool]
+
+    SPAWN --> WR[WorkerRuntime]
+    WR --> WCTX[Worker prompt + restricted tools]
+    WCTX --> WRC[Worker RuntimeCore]
+    WRC --> WP[Provider]
+    WRC --> WTR[Restricted ToolRegistry]
+    WRC --> WRES[Validated worker result]
+
+    WRES --> EXEC
+    F1 --> EXEC
+    EXEC --> RC
+
+    BUS --> STREAM[CLI event streaming]
+    BUS --> PERSIST[JSONL event records]
+```
 
 ---
 
 ## Worker Model
 
-Generic workers are described with structured `WorkerSpec` objects:
+Workers are now generic bounded runtimes, not fixed hardcoded F1 role classes.
 
-- `worker_id`
+Each worker is created from:
+
 - `task`
 - `system_prompt`
 - `allowed_tools`
 - `result_contract`
 
-`allowed_tools` is the hard boundary for worker execution. Workers only receive the explicitly allowed subset of tools.
+Slice-1 worker policy:
 
-Slice 1 policy:
+- unknown `allowed_tools` are rejected
+- empty tool surfaces are rejected
+- nested `spawn` is rejected
+- worker output must satisfy the declared `result_contract`
+- worker activity emits `subagent_*` runtime events
 
-- nested spawn is disallowed
-- any worker spec that includes `spawn` in `allowed_tools` is rejected before the worker runs
-- the parent turn receives a normal tool-error payload for that failed spawn call instead of crashing the whole turn
-
-This keeps worker execution depth-1 and preserves containment.
-
----
-
-## End-To-End Turn Flow
-
-For the primary runtime path:
-
-1. `hannah/cli/app.py` dispatches to `hannah/cli/agent_command.py`
-2. `agent_command.py` chooses one-shot or interactive execution
-3. `chat.py` or the one-shot path creates memory/session context
-4. `AgentLoop` builds the main prompt and turn-specific tool list
-5. `RuntimeCore` emits `user_message_received`
-6. `RuntimeCore` calls the provider
-7. if the provider returns tool calls, `RuntimeCore` normalizes arguments and executes them
-8. if the tool is `spawn`, `WorkerRuntime` runs a bounded worker turn through another `RuntimeCore`
-9. tool results and worker results are reinjected into the parent turn
-10. `RuntimeCore` emits `final_answer_emitted`
-11. `AgentLoop` persists the user/assistant messages
-
-The LLM still orchestrates. The domain tools still own simulation, telemetry, prediction, and strategy computation.
+This is the current autonomy boundary: the main agent can delegate dynamically, but only inside a restricted and auditable runtime surface.
 
 ---
 
 ## Runtime Events
 
-The event contract is fixed in `hannah/runtime/events.py`.
+The stable event contract lives in `hannah/runtime/events.py`.
 
 Core event names:
 
@@ -144,56 +188,78 @@ Core event names:
 - `final_answer_emitted`
 - `error_emitted`
 
-The worker-facing naming contract is the `subagent_*` family:
+The `subagent_*` family is especially important because it is consumed by:
 
-- `subagent_spawned`
-- `subagent_progress`
-- `subagent_completed`
+- CLI live streaming
+- acceptance tests
+- JSONL event persistence
 
-Those names are the compatibility contract for slice 1. They are what the CLI formatter, acceptance tests, and session event persistence layer consume.
+The slice contract depends on stable ordering for the worker event flow:
+
+`subagent_spawned -> subagent_progress -> subagent_progress -> subagent_completed`
 
 ---
 
-## Streaming And JSONL Persistence
+## Persistence Model
 
-Runtime events are not just internal tracing.
+There are now two persistence lanes:
 
-- `hannah/cli/chat.py` subscribes to the runtime event bus
-- `hannah/cli/format.py` renders the `subagent_*` events as streamed terminal output
-- `hannah/session/manager.py` persists every runtime event as a JSONL event record through `hannah/session/event_records.py`
+### Message persistence
 
-That means the same runtime event stream drives:
+Session-backed surfaces store user and assistant messages through `SessionManager`.
 
-- live subagent activity in the terminal
-- durable event history in session files
+### Event persistence
 
-The slice 1 acceptance contract depends on that shared event stream, including stable ordering for `subagent_spawned -> subagent_progress -> subagent_progress -> subagent_completed`.
+The same runtime event stream is also serialized into JSONL-safe event records.
+
+That means a session can capture:
+
+- the user-visible conversation
+- the internal runtime event history
+- worker spawn and progress events
+
+This is what makes replay, inspection, and future trace tooling practical without moving domain logic into the loop.
 
 ---
 
 ## Failure Boundaries
 
-The runtime keeps turns alive when possible.
+The runtime is designed to fail at boundaries, not by collapsing the whole turn.
 
-- malformed tool args are normalized or rejected at the boundary
-- tool failures are serialized back into tool messages instead of crashing the turn
-- disallowed nested spawn returns a structured spawn-tool error
-- provider failures emit `error_emitted` and can be handled by the provider seam or caller
+- malformed tool arguments are normalized or rejected before execution
+- tool failures are serialized back as tool messages
+- disallowed worker specs return structured spawn-tool errors
+- provider failures emit `error_emitted`
+- oversized tool payloads are compacted before reinjection where required
 
-This is the intended slice 1 behavior: bounded workers, explicit runtime events, and compatibility surfaces over one shared runtime core.
+The loop should keep orchestration alive whenever a bounded error can be represented honestly.
+
+---
+
+## What Did Not Change
+
+The migration changed the runtime shape, not the ownership model.
+
+These boundaries still hold:
+
+- tools own simulation, prediction, strategy, telemetry, and training work
+- the provider seam remains the model boundary
+- the LLM does not fabricate simulator outputs
+- slash/session controls do not become model messages
+- Hannah remains a CLI-first F1 agent, not a generic shell agent
 
 ---
 
 ## Reading Order
 
-Read these files in order if you need to trace the current architecture:
+Read these files in order if you need to understand the new loop:
 
 1. `hannah/cli/app.py`
 2. `hannah/cli/agent_command.py`
 3. `hannah/cli/chat.py`
 4. `hannah/agent/loop.py`
 5. `hannah/runtime/core.py`
-6. `hannah/agent/worker_runtime.py`
-7. `hannah/agent/tool_registry.py`
+6. `hannah/agent/tool_registry.py`
+7. `hannah/agent/worker_runtime.py`
 8. `hannah/session/manager.py`
 9. `hannah/session/event_records.py`

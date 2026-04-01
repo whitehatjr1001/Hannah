@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from hannah.agent.loop import AgentLoop
+from hannah.bus import run_bus_turn
 from hannah.cli.chat import run_interactive_chat_session, run_message_chat_session
 from hannah.cli.format import make_hannah_panel
 from hannah.utils.console import Console
@@ -51,7 +52,13 @@ async def run_agent_command(
 
     if not persist_session:
         console.print(f"\n[dim]  ❯[/dim] [white]{message or ''}[/white]\n")
-        final_text = await AgentLoop(memory=_EphemeralMemory()).run_turn(message or "")
+        outbound = await run_bus_turn(
+            agent_loop=AgentLoop(memory=_EphemeralMemory()),
+            message=message or "",
+            session_id=session_id,
+            channel="cli",
+        )
+        final_text = outbound.content
         console.print()
         console.print(make_hannah_panel(final_text))
         console.print()

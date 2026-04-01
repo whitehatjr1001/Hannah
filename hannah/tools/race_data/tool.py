@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
-from hannah.data.fastf1_loader import fetch_session
-from hannah.data.openf1_client import OpenF1Client
+from hannah._data_.fastf1_loader import fetch_session
+from hannah._data_.openf1_client import OpenF1Client
 
 SKILL = {
     "name": "race_data",

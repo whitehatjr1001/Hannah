@@ -10,6 +10,7 @@ from click.testing import CliRunner
 import hannah.cli.agent_command as agent_command_module
 import hannah.cli.app as app_module
 import hannah.cli.chat as chat_module
+import hannah.bus.queue as bus_queue_module
 from hannah.runtime.events import EventEnvelope
 from hannah.session.manager import SessionManager
 from hannah.utils.console import Console
@@ -254,3 +255,65 @@ def test_chat_turn_threads_active_session_id_into_emitted_and_persisted_events(
     assert event_record["payload"]["event_type"] == "subagent_progress"
     assert event_record["payload"]["worker_id"] == "strategy"
     assert event_record["payload"]["payload"]["message"] == "Running race_sim"
+
+
+def test_interactive_chat_session_uses_async_prompt_api(monkeypatch) -> None:
+    class _FakePromptSession:
+        def __init__(self) -> None:
+            self.awaited = False
+
+        def prompt(self, *_args, **_kwargs) -> str:
+            raise AssertionError("sync prompt() should not be used inside async chat")
+
+        async def prompt_async(self, *_args, **_kwargs) -> str:
+            self.awaited = True
+            return "exit"
+
+    fake_prompt_session = _FakePromptSession()
+
+    monkeypatch.setattr(chat_module, "is_interactive_terminal", lambda: True)
+    monkeypatch.setattr(chat_module, "_build_prompt_session", lambda: fake_prompt_session)
+    monkeypatch.setattr(chat_module, "HTML", lambda value: value)
+    monkeypatch.setattr(chat_module, "render_model_status", lambda **_kwargs: None)
+
+    asyncio.run(
+        chat_module.run_interactive_chat_session(
+            console=Console(),
+            panel_renderer=lambda text: text,
+            agent_loop_cls=_FakeAgentLoop,
+        )
+    )
+
+    assert fake_prompt_session.awaited is True
+
+
+def test_chat_message_mode_publishes_bus_ingress_and_egress(monkeypatch) -> None:
+    runner = CliRunner()
+    published: list[str] = []
+
+    class _RecordingBus(bus_queue_module.MessageBus):
+        def __init__(self) -> None:
+            super().__init__()
+            published.append("created")
+
+        async def publish(self, message):
+            published.append(message.direction)
+            await super().publish(message)
+
+    class _FakeAgentLoop:
+        def __init__(self, memory=None, **kwargs) -> None:
+            del kwargs
+            self.memory = memory
+
+        async def run_turn(self, user_input: str, *, session_id: str = "default") -> str:
+            del session_id
+            return f"reply={user_input}"
+
+    monkeypatch.setattr(bus_queue_module, "MessageBus", _RecordingBus)
+    monkeypatch.setattr(agent_command_module, "AgentLoop", _FakeAgentLoop)
+    monkeypatch.setattr(agent_command_module, "make_hannah_panel", lambda text: text)
+
+    result = runner.invoke(app_module.cli, ["chat", "--message", "box the car", "--session", "cli:bus"])
+
+    assert result.exit_code == 0
+    assert published == ["created", "inbound", "outbound"]

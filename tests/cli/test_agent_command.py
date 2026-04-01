@@ -7,6 +7,7 @@ from click.testing import CliRunner
 import hannah.cli.agent_command as agent_command_module
 import hannah.cli.app as app_module
 import hannah.cli.command_prompts as command_prompts_module
+import hannah.bus.queue as bus_queue_module
 
 
 def test_agent_message_mode_invokes_shared_runtime(monkeypatch) -> None:
@@ -310,3 +311,37 @@ def test_bare_tty_startup_dispatches_to_agent(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert seen == [(None, True, "cli:direct", False, True)]
+
+
+def test_agent_message_mode_publishes_bus_ingress_and_egress(monkeypatch) -> None:
+    runner = CliRunner()
+    seen: list[tuple[str, str | None]] = []
+    published: list[str] = []
+
+    class _RecordingBus(bus_queue_module.MessageBus):
+        def __init__(self) -> None:
+            super().__init__()
+            published.append("created")
+
+        async def publish(self, message):
+            published.append(message.direction)
+            await super().publish(message)
+
+    class _FakeAgentLoop:
+        def __init__(self, memory=None, **kwargs) -> None:
+            del kwargs
+            self.memory = memory
+
+        async def run_turn(self, user_input: str, *, session_id: str = "default") -> str:
+            seen.append((user_input, session_id))
+            return f"reply={user_input}"
+
+    monkeypatch.setattr(agent_command_module, "AgentLoop", _FakeAgentLoop)
+    monkeypatch.setattr(agent_command_module, "make_hannah_panel", lambda text: text)
+    monkeypatch.setattr(bus_queue_module, "MessageBus", _RecordingBus)
+
+    result = runner.invoke(app_module.cli, ["agent", "--message", "should we undercut"])
+
+    assert result.exit_code == 0
+    assert seen == [("should we undercut", "cli:direct")]
+    assert published == ["created", "inbound", "outbound"]
