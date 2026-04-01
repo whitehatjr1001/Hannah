@@ -286,7 +286,6 @@ def test_interactive_chat_session_uses_async_prompt_api(monkeypatch) -> None:
 
     assert fake_prompt_session.awaited is True
 
-
 def test_chat_message_mode_publishes_bus_ingress_and_egress(monkeypatch) -> None:
     runner = CliRunner()
     published: list[str] = []
