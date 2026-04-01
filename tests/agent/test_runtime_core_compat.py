@@ -57,12 +57,16 @@ class _RecordingRegistry:
 def test_runtime_package_keeps_compatibility_exports() -> None:
     builder = RuntimeContextBuilder()
     context = MainAgentContext(persona="system", user_input="hello")
+    messages = builder.build_main_turn(context)
 
     assert RuntimeCore.__module__ == "hannah.runtime.core"
-    assert builder.build_main_turn(context) == [
-        {"role": "system", "content": "system"},
-        {"role": "user", "content": "hello"},
-    ]
+    assert messages[-1] == {"role": "user", "content": "hello"}
+    assert len(messages) == 6
+    assert "Identity/Runtime block:" in messages[0]["content"]
+    assert "Bootstrap docs block:" in messages[1]["content"]
+    assert "Memory context block:" in messages[2]["content"]
+    assert "Skills summary hook block:" in messages[3]["content"]
+    assert "Hannah F1 persona block:" in messages[4]["content"]
 
 
 @pytest.mark.anyio

@@ -177,10 +177,19 @@ def test_run_turn_directly_retries_permission_deferrals_in_agent_loop(
     assert result == "Strategy locked now."
     assert len(provider_calls) == 2
     assert provider_calls[0][-1] == {"role": "user", "content": user_input}
-    assert provider_calls[0][1]["content"].startswith(
-        "This turn is a race analysis or prediction request"
+    first_pass_system_messages = [
+        message["content"]
+        for message in provider_calls[0]
+        if message.get("role") == "system"
+    ]
+    assert any(
+        content.startswith("Identity/Runtime block:") for content in first_pass_system_messages
     )
-    assert provider_calls[0][2] == {"role": "assistant", "content": "Previous context."}
+    assert any(
+        "This turn is a race analysis or prediction request" in content
+        for content in first_pass_system_messages
+    )
+    assert provider_calls[0][5] == {"role": "assistant", "content": "Previous context."}
     assert provider_calls[1][-2] == {
         "role": "assistant",
         "content": "Let me know if you'd like me to proceed with that analysis!",
