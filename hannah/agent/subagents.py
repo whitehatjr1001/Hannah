@@ -13,6 +13,7 @@ from hannah.agent.subagent_manager import SubagentManager
 from hannah.agent.worker_registry import build_legacy_worker_specs as _build_legacy_worker_specs
 from hannah.agent.worker_runtime import WorkerSpec
 from hannah.config.loader import load_config
+from hannah.domain.prompts import build_team_strategist_persona
 from hannah.models.train_pit_q import ARTIFACT_PATH as PIT_POLICY_Q_ARTIFACT_PATH
 from hannah.models.train_pit_q import choose_action as choose_q_policy_action
 from hannah.providers.registry import ProviderRegistry
@@ -129,10 +130,31 @@ class PredictAgent(BaseSubAgent):
 
 class RivalAgent(BaseSubAgent):
     TEAM_PERSONAS = {
-        "NOR": "You are the McLaren strategist. Prefer aggressive undercuts.",
-        "LEC": "You are the Ferrari strategist. Protect track position.",
-        "HAM": "You are the Mercedes strategist. Default to conservative calls.",
-        "ALO": "You are the Aston Martin strategist. Exploit safety car windows.",
+        code: build_team_strategist_persona(code)
+        for code in (
+            "NOR",
+            "PIA",
+            "RUS",
+            "ANT",
+            "LEC",
+            "HAM",
+            "VER",
+            "HAD",
+            "LAW",
+            "LIN",
+            "GAS",
+            "COL",
+            "HUL",
+            "BOR",
+            "ALB",
+            "SAI",
+            "PER",
+            "BOT",
+            "ALO",
+            "STR",
+            "OCO",
+            "BEA",
+        )
     }
 
     def __init__(self, driver_code: str) -> None:
@@ -141,7 +163,7 @@ class RivalAgent(BaseSubAgent):
         self.name = f"rival_{driver_code.lower()}"
         self.persona = self.TEAM_PERSONAS.get(
             driver_code,
-            f"You are the strategist for {driver_code}. Return a sharp race call.",
+            build_team_strategist_persona(driver_code),
         )
 
     async def run(self, ctx: RaceContext) -> SubAgentResult:

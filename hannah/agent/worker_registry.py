@@ -4,12 +4,34 @@ from __future__ import annotations
 
 from hannah.agent.context import RaceContext
 from hannah.agent.worker_runtime import WorkerSpec
+from hannah.domain.prompts import build_team_strategist_persona
 
 RIVAL_TEAM_PERSONAS = {
-    "NOR": "You are the McLaren strategist. Prefer aggressive undercuts.",
-    "LEC": "You are the Ferrari strategist. Protect track position.",
-    "HAM": "You are the Mercedes strategist. Default to conservative calls.",
-    "ALO": "You are the Aston Martin strategist. Exploit safety car windows.",
+    code: build_team_strategist_persona(code)
+    for code in (
+        "NOR",
+        "PIA",
+        "RUS",
+        "ANT",
+        "LEC",
+        "HAM",
+        "VER",
+        "HAD",
+        "LAW",
+        "LIN",
+        "GAS",
+        "COL",
+        "HUL",
+        "BOR",
+        "ALB",
+        "SAI",
+        "PER",
+        "BOT",
+        "ALO",
+        "STR",
+        "OCO",
+        "BEA",
+    )
 }
 
 
