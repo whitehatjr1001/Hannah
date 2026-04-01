@@ -11,6 +11,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable
 
+from hannah.mcp.registry import MCPRegistry
 from hannah.agent.worker_runtime import SPAWN_TOOL_SPEC
 from hannah.utils.console import Console, Table
 
@@ -294,8 +295,13 @@ def _validate_schema_value(
 class ToolRegistry:
     """Discover tools from the `hannah.tools` package."""
 
-    def __init__(self, tools_dir: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        tools_dir: str | Path | None = None,
+        mcp_registry: MCPRegistry | None = None,
+    ) -> None:
         self.tools_dir = Path(tools_dir or Path(__file__).resolve().parents[1] / "tools")
+        self._mcp_registry = mcp_registry or MCPRegistry.from_config()
         self._tools = self._discover()
 
     def _discover(self) -> dict[str, RegisteredTool]:
@@ -327,8 +333,34 @@ class ToolRegistry:
                 run_fn=run_fn,
                 signature=inspect.signature(run_fn),
             )
+        tools.update(self._discover_mcp_tools())
         for runtime_tool in self._runtime_placeholders().values():
             tools[runtime_tool.name] = runtime_tool
+        return tools
+
+    def _discover_mcp_tools(self) -> dict[str, RegisteredTool]:
+        if self._mcp_registry is None or not self._mcp_registry.enabled:
+            return {}
+
+        tools: dict[str, RegisteredTool] = {}
+        for binding in self._mcp_registry.registered_tools():
+            def _build_runner(tool_name: str) -> Callable[..., Any]:
+                async def _run_mcp_tool(**kwargs: Any) -> dict[str, Any]:
+                    return await self._mcp_registry.call(tool_name, kwargs)
+
+                return _run_mcp_tool
+
+            runner = _build_runner(binding.name)
+
+            tools[binding.name] = RegisteredTool(
+                name=binding.name,
+                description=binding.description,
+                module_name=f"mcp.{binding.server_name}",
+                module=None,
+                parameters=deepcopy(binding.parameters),
+                run_fn=runner,
+                signature=inspect.signature(runner),
+            )
         return tools
 
     def _runtime_placeholders(self) -> dict[str, RegisteredTool]:
@@ -401,6 +433,7 @@ class ToolRegistry:
     def _clone_with_tools(self, tools: dict[str, RegisteredTool]) -> "ToolRegistry":
         clone = object.__new__(ToolRegistry)
         clone.tools_dir = self.tools_dir
+        clone._mcp_registry = self._mcp_registry
         clone._tools = tools
         return clone
 
