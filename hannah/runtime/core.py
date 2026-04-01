@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import warnings
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, TypedDict
 
@@ -65,7 +66,7 @@ class RuntimeTurnReply(TypedDict):
     messages: list[dict[str, Any]]
 
 
-class RuntimeCore:
+class _RuntimeCoreEngine:
     def __init__(
         self,
         provider: object,
@@ -608,3 +609,60 @@ class RuntimeCore:
                 if isinstance(text, str):
                     parts.append(text)
         return "\n".join(part for part in parts if part).strip()
+
+
+class RuntimeCore:
+    """Compatibility shim for the retired public runtime-core ownership surface."""
+
+    def __init__(
+        self,
+        provider: object,
+        registry: object,
+        event_bus: AsyncEventBus | None = None,
+        *,
+        memory: object | None = None,
+        context_builder: RuntimeContextBuilder | None = None,
+        temperature: float = 0.2,
+        max_tokens: int = 2048,
+        console: Console | None = None,
+        allow_spawn_tool: bool = True,
+    ) -> None:
+        if allow_spawn_tool:
+            warnings.warn(
+                "RuntimeCore is now a compatibility shim; AgentLoop owns the shared runtime path.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        self._engine = _RuntimeCoreEngine(
+            provider=provider,
+            registry=registry,
+            event_bus=event_bus,
+            memory=memory,
+            context_builder=context_builder,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            console=console,
+            allow_spawn_tool=allow_spawn_tool,
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._engine, name)
+
+    async def run_turn(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        session_id: str = "default",
+        turn_tools: list[dict[str, Any]] | None = None,
+        should_retry: RetryPolicy | None = None,
+        retry_guidance: str | None = None,
+        execute_tool_calls: ExecuteToolCallsHook | None = None,
+    ) -> RuntimeTurnReply:
+        return await self._engine.run_turn(
+            messages,
+            session_id=session_id,
+            turn_tools=turn_tools,
+            should_retry=should_retry,
+            retry_guidance=retry_guidance,
+            execute_tool_calls=execute_tool_calls,
+        )

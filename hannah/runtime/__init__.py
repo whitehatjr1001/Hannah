@@ -1,3 +1,5 @@
+"""Compatibility exports for the retired runtime ownership surface."""
+
 from .bus import AsyncEventBus
 from .context import MainAgentContext, RuntimeContextBuilder
 from .core import RuntimeCore

@@ -2,13 +2,13 @@
 
 ## Purpose
 
-This document describes the current Hannah agent runtime after the nanobot-style runtime migration slice.
+This document describes the current Hannah agent runtime after the nanobot-style runtime migration slices.
 
 The important change is simple:
 
 - `hannah agent` is now the primary product surface
-- `RuntimeCore` is now the real loop owner
-- `AgentLoop` remains as a compatibility adapter
+- `AgentLoop` owns the Hannah-specific turn policy and context assembly
+- `RuntimeCore` is now a compatibility shim for the retired public runtime surface
 - generic bounded subagents now run through the same runtime shape
 - runtime events stream to the CLI and persist to session storage
 
@@ -22,14 +22,14 @@ Think about Hannah in this order:
 
 1. CLI surface receives user intent
 2. `AgentLoop` builds Hannah-specific context and selects the allowed tool surface
-3. `RuntimeCore` runs the provider -> tool -> provider loop
+3. `RuntimeCore` keeps the shared provider -> tool -> provider roundtrip alive for compatibility
 4. tools own deterministic F1 work
 5. `spawn` can create bounded worker runtimes with restricted tools
 6. runtime events drive both terminal streaming and persisted event history
 
 That means the loop is:
 
-`CLI -> AgentLoop adapter -> RuntimeCore -> provider/tools/workers -> streamed + persisted results`
+`CLI -> AgentLoop policy owner -> RuntimeCore compatibility shim -> provider/tools/workers -> streamed + persisted results`
 
 ---
 
@@ -40,9 +40,9 @@ That means the loop is:
 | `hannah/cli/app.py` | CLI command registration. `agent` is the primary runtime entrypoint. |
 | `hannah/cli/agent_command.py` | Shared execution path for `agent` plus one-shot compatibility wrappers. |
 | `hannah/cli/chat.py` | Interactive shell, session lifecycle, event subscription, and runtime rendering. |
-| `hannah/agent/loop.py` | Compatibility adapter that assembles Hannah context and delegates turn execution to `RuntimeCore`. |
-| `hannah/runtime/core.py` | Owns the actual agent turn loop: provider calls, tool roundtrips, worker reinjection, and event emission. |
-| `hannah/runtime/context.py` | Builds message stacks for main-agent and worker turns. |
+| `hannah/agent/loop.py` | Hannah-specific turn policy owner that assembles context and delegates execution. |
+| `hannah/runtime/core.py` | Compatibility facade over the shared provider/tool engine; preserves the legacy public runtime API. |
+| `hannah/runtime/context.py` | Shared message-shaping helpers used by the compatibility runtime path. |
 | `hannah/runtime/events.py` | Defines the allowed runtime event contract. |
 | `hannah/runtime/bus.py` | Async event bus for live streaming and persistence hooks. |
 | `hannah/agent/tool_registry.py` | Tool discovery, normalization, validation, and dispatch. |
@@ -72,6 +72,7 @@ That means the loop is:
 - `agent` and `chat` are session-backed surfaces
 - `ask`, `simulate`, `predict`, and `strategy` stay ephemeral by default
 - `sandbox`, `fetch`, and `train` are not routed through the shared `agent_command` session wrapper, but they still execute through the Hannah runtime stack where applicable
+- the old public `RuntimeCore` name stays available for compatibility, but it is not the canonical home for new runtime behavior
 
 So the runtime is shared, but the UX contract is not identical across commands.
 
@@ -84,7 +85,7 @@ For a normal `agent` turn, the flow is:
 1. CLI collects a message
 2. `hannah/cli/agent_command.py` or `hannah/cli/chat.py` creates the execution context
 3. `AgentLoop` builds persona, recent memory, and the tool allowlist for the turn
-4. `AgentLoop` delegates the turn to `RuntimeCore`
+4. `AgentLoop` delegates the turn to the compatibility runtime path
 5. `RuntimeCore` emits `user_message_received`
 6. `RuntimeCore` calls the provider with messages and tool specs
 7. if the provider returns tool calls, `RuntimeCore` emits tool events, normalizes args, and dispatches tools
@@ -102,6 +103,8 @@ The LLM does not become the simulator.
 
 The simulator, data, and model layers still own deterministic F1 work.
 
+`RuntimeCore` is no longer the place to add new turn policy. New runtime ownership belongs in `AgentLoop`, `WorkerRuntime`, and the tool layer. Keep `RuntimeCore` changes limited to compatibility and shared-shape maintenance.
+
 ---
 
 ## Mermaid
@@ -111,7 +114,7 @@ flowchart TD
     U[User / CLI] --> C[CLI Command]
     C --> AC[agent_command or chat shell]
     AC --> AL[AgentLoop adapter]
-    AL --> RC[RuntimeCore]
+    AL --> RC[RuntimeCore compatibility shim]
 
     AL --> CTX[Persona + Memory + Tool Allowlist]
     CTX --> RC
@@ -133,7 +136,7 @@ flowchart TD
 
     SPAWN --> WR[WorkerRuntime]
     WR --> WCTX[Worker prompt + restricted tools]
-    WCTX --> WRC[Worker RuntimeCore]
+    WCTX --> WRC[Worker RuntimeCore compatibility shim]
     WRC --> WP[Provider]
     WRC --> WTR[Restricted ToolRegistry]
     WRC --> WRES[Validated worker result]
