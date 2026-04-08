@@ -9,6 +9,7 @@ from pathlib import Path
 try:
     import click
 except Exception:
+
     class _Choice:
         def __init__(self, choices):
             self.choices = choices
@@ -42,7 +43,10 @@ except Exception:
                     del command_args
 
                     def register(subcommand):
-                        name = str(command_kwargs.get("name") or getattr(subcommand, "name", subcommand.__name__))
+                        name = str(
+                            command_kwargs.get("name")
+                            or getattr(subcommand, "name", subcommand.__name__)
+                        )
                         commands[name] = subcommand
                         return subcommand
 
@@ -60,8 +64,10 @@ except Exception:
 try:
     from dotenv import load_dotenv
 except Exception:
+
     def load_dotenv() -> None:
         return None
+
 
 from hannah.agent.loop import AgentLoop
 from hannah.agent.tool_registry import ToolRegistry
@@ -77,7 +83,7 @@ from hannah.cli.provider_ui import (
 )
 from hannah.utils.console import Console
 
-load_dotenv()
+load_dotenv(override=True)
 console = Console()
 
 
@@ -111,7 +117,9 @@ def cli(ctx: click.Context) -> None:
             ctx.invoke(agent)
             return
         console.print(BANNER)
-        console.print("[dim]  Type [bold]hannah --help[/bold] to see all commands.[/dim]\n")
+        console.print(
+            "[dim]  Type [bold]hannah --help[/bold] to see all commands.[/dim]\n"
+        )
 
 
 @cli.command()
@@ -155,7 +163,9 @@ def simulate(race: str, year: int, driver: str | None, laps: int, weather: str) 
     default=None,
     help="Optional comma-separated checkpoint laps e.g. 12,28,57",
 )
-@click.option("--json-output", is_flag=True, help="Print raw trace JSON instead of summary")
+@click.option(
+    "--json-output", is_flag=True, help="Print raw trace JSON instead of summary"
+)
 def trace_command(
     race: str,
     year: int,
@@ -244,13 +254,17 @@ def strategy(race: str, lap: int, driver: str, strategy_type: str) -> None:
 
 
 @cli.command()
-@click.option("--agents", required=True, help="Comma-separated driver codes e.g. VER,NOR,LEC")
+@click.option(
+    "--agents", required=True, help="Comma-separated driver codes e.g. VER,NOR,LEC"
+)
 @click.option("--race", default="bahrain", help="Race circuit")
 @click.option("--laps", default=57, help="Race laps")
 @click.option("--weather", default="dry")
 def sandbox(agents: str, race: str, laps: int, weather: str) -> None:
     """Run a multi-agent sandbox race."""
-    driver_list = [driver.strip().upper() for driver in agents.split(",") if driver.strip()]
+    driver_list = [
+        driver.strip().upper() for driver in agents.split(",") if driver.strip()
+    ]
     _run_agent_command(
         f"Run a full sandbox race at {race}, {laps} laps, {weather} conditions. "
         f"Drivers: {', '.join(driver_list)}. "
@@ -261,7 +275,9 @@ def sandbox(agents: str, race: str, laps: int, weather: str) -> None:
 @cli.command()
 @click.option("--race", required=True, help="Race name")
 @click.option("--year", default=2025, help="Season year")
-@click.option("--session", default="R", type=click.Choice(["R", "Q", "FP1", "FP2", "FP3"]))
+@click.option(
+    "--session", default="R", type=click.Choice(["R", "Q", "FP1", "FP2", "FP3"])
+)
 @click.option("--driver", default=None, help="Driver code (optional)")
 def fetch(race: str, year: int, session: str, driver: str | None) -> None:
     """Fetch and cache F1 data."""
@@ -275,9 +291,20 @@ def fetch(race: str, year: int, session: str, driver: str | None) -> None:
 @cli.command()
 @click.argument(
     "model_name",
-    type=click.Choice(["tyre_model", "laptime_model", "pit_rl", "pit_policy_q", "winner_ensemble", "all"]),
+    type=click.Choice(
+        [
+            "tyre_model",
+            "laptime_model",
+            "pit_rl",
+            "pit_policy_q",
+            "winner_ensemble",
+            "all",
+        ]
+    ),
 )
-@click.option("--years", default="2024", help="Comma-separated years e.g. 2022,2023,2024")
+@click.option(
+    "--years", default="2024", help="Comma-separated years e.g. 2022,2023,2024"
+)
 @click.option("--races", default=None, help="Specific races only (optional)")
 def train(model_name: str, years: str, races: str | None) -> None:
     """Train ML models from the CLI."""
@@ -305,9 +332,20 @@ def ask(question: str) -> None:
 
 
 @cli.command(name="agent")
-@click.option("--message", "-m", default=None, help="Single message to send through the shared agent runtime")
-@click.option("--session", "session_id", default="cli:direct", help="Session id to resume")
-@click.option("--new-session", is_flag=True, help="Create a fresh session id before sending the message")
+@click.option(
+    "--message",
+    "-m",
+    default=None,
+    help="Single message to send through the shared agent runtime",
+)
+@click.option(
+    "--session", "session_id", default="cli:direct", help="Session id to resume"
+)
+@click.option(
+    "--new-session",
+    is_flag=True,
+    help="Create a fresh session id before sending the message",
+)
 def agent(message: str | None, session_id: str, new_session: bool) -> None:
     """Primary shared runtime surface for one-shot and interactive agent turns."""
     asyncio.run(
@@ -322,9 +360,20 @@ def agent(message: str | None, session_id: str, new_session: bool) -> None:
 
 
 @cli.command()
-@click.option("--message", "-m", default=None, help="Single message to send through the chat compatibility path")
-@click.option("--session", "session_id", default="cli:direct", help="Chat session id to resume")
-@click.option("--new-session", is_flag=True, help="Create a fresh session id before sending the message")
+@click.option(
+    "--message",
+    "-m",
+    default=None,
+    help="Single message to send through the chat compatibility path",
+)
+@click.option(
+    "--session", "session_id", default="cli:direct", help="Chat session id to resume"
+)
+@click.option(
+    "--new-session",
+    is_flag=True,
+    help="Create a fresh session id before sending the message",
+)
 def chat(message: str | None, session_id: str, new_session: bool) -> None:
     """Compatibility wrapper over the shared agent runtime."""
     asyncio.run(
@@ -357,16 +406,27 @@ def providers_command(env_file: Path) -> None:
 
 
 @cli.command()
-@click.option("--provider", type=provider_choice(), default=None, help="Provider preset to configure")
+@click.option(
+    "--provider",
+    type=provider_choice(),
+    default=None,
+    help="Provider preset to configure",
+)
 @click.option("--api-key", default=None, help="API key to store in the env file")
-@click.option("--model", default=None, help="Model override; defaults to the preset's hosted model")
+@click.option(
+    "--model",
+    default=None,
+    help="Model override; defaults to the preset's hosted model",
+)
 @click.option(
     "--env-file",
     default=".env",
     type=click.Path(dir_okay=False, path_type=Path),
     help="Env file to update",
 )
-def configure(provider: str | None, api_key: str | None, model: str | None, env_file: Path) -> None:
+def configure(
+    provider: str | None, api_key: str | None, model: str | None, env_file: Path
+) -> None:
     """Configure a hosted provider key and default model."""
     run_provider_configure_flow(
         console=console,
@@ -390,11 +450,17 @@ def model() -> None:
 
 
 @cli.command(name="rlm-probe")
-@click.option("--base-url", default=None, help="Optional local OpenAI-compatible base URL override")
+@click.option(
+    "--base-url",
+    default=None,
+    help="Optional local OpenAI-compatible base URL override",
+)
 @click.option("--api-key", default=None, help="Optional API key override")
 @click.option("--model-name", default=None, help="Optional model override")
 @click.option("--json-output", is_flag=True, help="Print raw probe JSON")
-def rlm_probe(base_url: str | None, api_key: str | None, model_name: str | None, json_output: bool) -> None:
+def rlm_probe(
+    base_url: str | None, api_key: str | None, model_name: str | None, json_output: bool
+) -> None:
     """Probe the optional local RLM endpoint without entering the main loop."""
     from hannah.rlm.helper import probe_runtime_helper
 

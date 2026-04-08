@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import pickle
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+
+from hannah.models.inference_v2 import load_joblib_artifact
 
 
 @dataclass(frozen=True)
@@ -38,8 +39,10 @@ class TyreModel:
     def _load_model(self):
         if not self.model_path.exists():
             return None
-        with self.model_path.open("rb") as handle:
-            return pickle.load(handle)
+        try:
+            return load_joblib_artifact(self.model_path)
+        except Exception:
+            return None
 
     def predict(
         self,
@@ -50,9 +53,16 @@ class TyreModel:
         rain_intensity: float = 0.0,
     ) -> float:
         profile = self._profile(compound)
-        if self.model is not None and hasattr(self.model, "predict"):
-            features = np.array([[age, len(profile.name), track_temp, wear_factor, rain_intensity]], dtype=float)
-            return float(self.model.predict(features)[0])
+        if self.model is not None:
+            predicted = self._predict_from_artifact(
+                compound=compound,
+                age=age,
+                track_temp=track_temp,
+                wear_factor=wear_factor,
+                rain_intensity=rain_intensity,
+            )
+            if predicted is not None:
+                return predicted
 
         normalized_age = max(age, 0)
         cliff_age = max(normalized_age - profile.cliff_lap, 0)
@@ -125,3 +135,57 @@ class TyreModel:
     def _profile(self, compound: str) -> CompoundProfile:
         normalized = compound.strip().upper()
         return COMPOUND_LIBRARY.get(normalized, COMPOUND_LIBRARY["MEDIUM"])
+
+    def _predict_from_artifact(
+        self,
+        *,
+        compound: str,
+        age: int,
+        track_temp: float,
+        wear_factor: float,
+        rain_intensity: float,
+    ) -> float | None:
+        estimator = getattr(self.model, "model", None)
+        feature_names = list(getattr(self.model, "feature_names", []) or [])
+        if estimator is None or not hasattr(estimator, "predict") or not feature_names:
+            return None
+
+        normalized_compound = compound.strip().upper()
+        base_features: dict[str, float] = {
+            "tyr_e_age_in_stint": float(max(age, 0)),
+            "stint_number": 1.0,
+            "stint_length": float(max(age, 1)),
+            "lap_number": float(max(age, 1)),
+            "position": 10.0,
+            "position_change": 0.0,
+            "gap_normalized": 0.0,
+            "track_temp": float(track_temp),
+            "air_temp": 25.0,
+            "rainfall": float(rain_intensity),
+            "race_median": 95.0,
+            "compound_encoded": {"SOFT": 2.0, "MEDIUM": 1.0, "HARD": 0.0}.get(
+                normalized_compound, 1.0
+            ),
+            "sector_1": 0.0,
+            "sector_2": 0.0,
+            "sector_3": 0.0,
+            "sector_sum": 0.0,
+            "laps_remaining": 0.0,
+            "laps_remaining_pct": 0.0,
+            "stint_progress": min(float(max(age, 1)) / 30.0, 1.0),
+            "compound_x_age": float(max(age, 0)),
+            "gap_to_ahead": 0.0,
+            "is_leader": 0.0,
+            "top_3": 0.0,
+            "race_phase": 1.0,
+            "safety_car_flag": 0.0,
+            "vsc_flag": 0.0,
+        }
+        base_features[f"compound_{normalized_compound}"] = 1.0
+
+        row = [float(base_features.get(name, 0.0)) for name in feature_names]
+        try:
+            prediction = estimator.predict(np.array([row], dtype=float))[0]
+        except Exception:
+            return None
+        return float(prediction)

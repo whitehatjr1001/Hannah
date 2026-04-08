@@ -8,6 +8,13 @@ from hannah.utils.console import Console
 
 console = Console()
 
+FASTF1_LOAD_KWARGS = {
+    "laps": True,
+    "telemetry": False,
+    "weather": True,
+    "messages": False,
+}
+
 
 def fetch_session(race: str, year: int, session_type: str) -> dict:
     """Fetch a FastF1 session and return JSON-serializable payloads."""
@@ -20,7 +27,7 @@ def fetch_session(race: str, year: int, session_type: str) -> dict:
 
         fastf1.Cache.enable_cache(str(cache_dir))
         session = fastf1.get_session(year, race, session_type)
-        session.load()
+        session.load(**FASTF1_LOAD_KWARGS)
         return {
             "laps": session.laps.to_dict(orient="records"),
             "weather": session.weather_data.to_dict(orient="records"),

@@ -71,8 +71,38 @@ def train(years: list[int], races: list[str] | None = None) -> str:
 def load_and_predict(payload: Any) -> dict[str, float]:
     """Predict winner probabilities from artifact priors or fallback weights."""
     drivers = _resolve_drivers(payload)
+    race = payload.get("race") if isinstance(payload, dict) else getattr(payload, "race", None)
+    year = payload.get("year") if isinstance(payload, dict) else getattr(payload, "year", None)
     artifact_path = resolve_artifact_path("winner_ensemble")
     if artifact_path.exists():
+        if race is not None and year is not None:
+            try:
+                from hannah.models.inference_v2 import infer_winner, load_race_frame
+
+                winner_payload = infer_winner(load_race_frame(int(year), str(race)))
+                probabilities = winner_payload.get("winner_probs", [])
+                if isinstance(probabilities, list):
+                    filtered = [
+                        entry
+                        for entry in probabilities
+                        if isinstance(entry, dict)
+                        and str(entry.get("driver", "")) in drivers
+                    ]
+                    if not filtered:
+                        filtered = probabilities
+                    if filtered:
+                        total = sum(
+                            float(entry.get("win_probability", 0.0)) for entry in filtered
+                        )
+                        if total > 0:
+                            return {
+                                str(entry["driver"]): round(
+                                    float(entry.get("win_probability", 0.0)) / total, 3
+                                )
+                                for entry in filtered
+                            }
+            except Exception:
+                pass
         try:
             artifact = load_pickle_artifact(artifact_path)
             if isinstance(artifact, WinnerArtifact):
